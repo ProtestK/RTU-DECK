@@ -1,0 +1,1590 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<meta name="theme-color" content="#111417"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<link rel="manifest" href="manifest.json"/>
+<link rel="apple-touch-icon" href="icon-192.png"/>
+<title>RTU DECK</title>
+<style>html,body{margin:0;background:#111417}#boot{color:#8c97a3;font:14px system-ui;text-align:center;padding-top:40vh}</style>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"><div id="boot">RTU DECK loading…<br/><small>first launch needs internet</small></div></div>
+<script type="text/babel" data-presets="react">
+
+const {useState,useEffect,useMemo,useRef} = React;
+/* ---- inline icons (lucide-style) ---- */
+const mkIcon=(kids)=>({size=18,style})=>(
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style} aria-hidden="true"
+    dangerouslySetInnerHTML={{__html:kids}}/>);
+const Home=mkIcon('<path d="M3 10.5 12 3l9 7.5V21h-6v-7H9v7H3z"/>');
+const Search=mkIcon('<circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 5 5"/>');
+const Calculator=mkIcon('<rect x="5" y="2" width="14" height="20" rx="2"/><path d="M9 6h6M9 11h.01M12 11h.01M15 11h.01M9 15h.01M12 15h.01M15 15h.01M9 19h6"/>');
+const ClipboardList=mkIcon('<rect x="5" y="4" width="14" height="18" rx="2"/><path d="M9 2h6v4H9zM9 12h6M9 16h6"/>');
+const BookOpen=mkIcon('<path d="M2 4h6a3 3 0 0 1 3 3v13a3 3 0 0 0-3-2H2zM22 4h-6a3 3 0 0 0-3 3v13a3 3 0 0 1 3-2h6z"/>');
+const ChevronLeft=mkIcon('<path d="m15 18-6-6 6-6"/>');
+const RotateCcw=mkIcon('<path d="M3 2v6h6"/><path d="M3 8a9 9 0 1 1-1 5"/>');
+const Copy=mkIcon('<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>');
+const Trash2=mkIcon('<path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6"/>');
+const Plus=mkIcon('<path d="M12 5v14M5 12h14"/>');
+const AlertTriangle=mkIcon('<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>');
+const Check=mkIcon('<path d="M20 6 9 17l-5-5"/>');
+/* ---- storage shim: claude artifact storage OR localStorage OR memory ---- */
+const APPSTORE=(()=>{ 
+  if(typeof window!=="undefined"&&window.storage)return window.storage;
+  try{
+    localStorage.setItem("__rd_t","1");localStorage.removeItem("__rd_t");
+    return{
+      get:async k=>{const v=localStorage.getItem(k);if(v==null)throw new Error("no key");return{key:k,value:v};},
+      set:async(k,v)=>{localStorage.setItem(k,v);return{key:k,value:v};},
+      delete:async k=>{localStorage.removeItem(k);return{key:k,deleted:true};},
+      list:async p=>({keys:Object.keys(localStorage).filter(k=>!p||k.startsWith(p))})
+    };
+  }catch(e){
+    const m={};
+    return{
+      get:async k=>{if(!(k in m))throw new Error("no key");return{key:k,value:m[k]};},
+      set:async(k,v)=>{m[k]=v;return{key:k,value:v};},
+      delete:async k=>{delete m[k];return{key:k,deleted:true};},
+      list:async p=>({keys:Object.keys(m).filter(k=>!p||k.startsWith(p))})
+    };
+  }
+})();
+/* ---- direct Anthropic API (user's own key) ---- */
+function getKey(){try{return localStorage.getItem("rtudeck:key")||"";}catch(e){return"";}}
+async function apiMessages(body){
+  const key=getKey();
+  if(!key)throw new Error("Add your API key first: Home -> Settings.");
+  const resp=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",
+    headers:{"Content-Type":"application/json","x-api-key":key,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+    body:JSON.stringify(body)});
+  if(!resp.ok){let t="";try{t=(await resp.text()).slice(0,140);}catch(e){}
+    throw new Error(resp.status===401?"Key rejected — re-check it in Settings.":"API "+resp.status+" "+t);}
+  return resp.json();
+}
+function SettingsView(){
+  const[key,setKey]=useState(getKey());
+  const[saved,setSaved]=useState(false);
+  const[test,setTest]=useState(null);
+  const save=()=>{try{localStorage.setItem("rtudeck:key",key.trim());setSaved(true);setTimeout(()=>setSaved(false),1400);}catch(e){}};
+  const doTest=async()=>{setTest("testing…");try{await apiMessages({model:"claude-sonnet-5",max_tokens:1000,messages:[{role:"user",content:"reply with OK"}]});setTest("Works — you are set.");}catch(e){setTest(e.message);}};
+  return(<div>
+    <div className="rd-banner">The three AI features (PM filler, Ask Claude, photo decode) need your own Anthropic API key out here. Everything else runs without one.</div>
+    <div className="rd-card">
+      <span className="rd-lbl">Anthropic API key</span>
+      <input className="rd-in" type="password" value={key} onChange={e=>setKey(e.target.value)} placeholder="sk-ant-…"/>
+      <button className="rd-jump" onClick={save}>{saved?"Saved \u2713":"Save key"}</button>
+      <button className="rd-ghost" style={{borderStyle:"solid",color:"var(--ink)"}} onClick={doTest}>Test it</button>
+      {test&&<div className="rd-note">{test}</div>}
+      <div className="rd-note">Get one at console.anthropic.com → API keys. Pay-per-use — a plate read costs a cent or two. The key is stored only on this phone and only sent to api.anthropic.com. Do not paste it anywhere public.</div>
+    </div>
+  </div>);
+}
+
+/* ================= RTU DECK v2 — rooftop field toolkit =================
+   Single-file React app. Dark steel + safety-amber "hang tag" system.
+   Trees use globally-unique node ids. o:[[label,next]] , goto_<tree> jumps.
+======================================================================== */
+
+/* ---------- PT DATA (psig at saturation °F) ---------- */
+const PT = {
+  "R-410A": [[0,48],[5,55],[10,62],[15,70],[20,78],[25,88],[30,97],[35,107],[40,118],[45,130],[50,142],[55,155],[60,170],[65,185],[70,201],[75,219],[80,236],[85,255],[90,274],[95,295],[100,317],[105,340],[110,364],[115,389],[120,416],[125,445],[130,473],[135,506],[140,539],[145,574],[150,610]],
+  "R-22":   [[0,24],[5,28.3],[10,32.8],[15,37.8],[20,43.1],[25,48.8],[30,54.9],[35,61.5],[40,68.5],[45,76.1],[50,84.1],[55,92.6],[60,101.6],[65,111.3],[70,121.4],[75,132.2],[80,143.7],[85,155.7],[90,168.4],[95,181.8],[100,195.9],[105,210.8],[110,226.4],[115,242.8],[120,259.9],[125,277.9],[130,296.8],[135,316.5],[140,337.2],[145,358.8],[150,381.5]],
+  "R-454B": [[0,45],[5,52],[10,58],[15,66],[20,74],[25,83],[30,91],[35,101],[40,111],[45,123],[50,134],[55,147],[60,161],[65,175],[70,190],[75,207],[80,223],[85,241],[90,259],[95,279],[100,300],[105,322],[110,344],[115,368],[120,394],[125,421],[130,448],[135,479],[140,510],[145,543],[150,578]]
+};
+const PT_NOTE = {
+  "R-410A": "Field chart, ±2 psi.",
+  "R-22": "Legacy units. Field chart, ±1 psi.",
+  "R-454B": "A2L replacement on 2025+ units. Near-azeotrope (~1°F glide) — values approx, verify against the chart on the unit."
+};
+function satTemp(ref, psig) {
+  const t = PT[ref]; if (!t || psig == null || isNaN(psig)) return null;
+  if (psig < t[0][1] || psig > t[t.length-1][1]) return "off";
+  for (let i=0;i<t.length-1;i++){
+    const [f1,p1]=t[i],[f2,p2]=t[i+1];
+    if (psig>=p1 && psig<=p2) return f1 + (psig-p1)*(f2-f1)/(p2-p1);
+  }
+  return null;
+}
+const r1 = n => (n==null||n==="off") ? n : Math.round(n*10)/10;
+
+/* ---------- THEME ---------- */
+const CSS = `
+:root{
+  --bg:#111417; --panel:#1b2026; --panel2:#20262d; --seam:#2b333c;
+  --ink:#e8edf2; --dim:#8c97a3; --amber:#ffb020; --amber-ink:#191203;
+  --ok:#39c07f; --trip:#ff5a48; --mono:ui-monospace,'SF Mono','JetBrains Mono',Menlo,monospace;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+.rd{min-height:100vh;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,-apple-system,'Segoe UI',sans-serif;padding-bottom:76px;max-width:560px;margin:0 auto}
+.rd h1,.rd h2,.rd h3{margin:0}
+.rd-top{position:sticky;top:0;z-index:9;background:linear-gradient(var(--bg) 82%,transparent);padding:12px 14px 8px;display:flex;align-items:center;gap:10px}
+.rd-brand{font-weight:800;letter-spacing:.14em;font-size:17px}
+.rd-brand b{color:var(--amber)}
+.rd-sub{color:var(--dim);font-size:11px;letter-spacing:.12em;text-transform:uppercase}
+.rd-back{background:var(--panel);border:1px solid var(--seam);color:var(--ink);border-radius:10px;min-width:44px;height:44px;display:flex;align-items:center;justify-content:center}
+.rd-wrap{padding:4px 14px 18px}
+.rd-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.rd-tile{background:var(--panel);border:1px solid var(--seam);border-radius:14px;padding:14px 12px;text-align:left;color:var(--ink);min-height:92px;display:flex;flex-direction:column;gap:6px;position:relative}
+.rd-tile:active{background:var(--panel2)}
+.rd-tag{font:800 11px/1 var(--mono);letter-spacing:.1em;color:var(--amber-ink);background:var(--amber);border-radius:5px;padding:4px 6px;width:max-content}
+.rd-tile b{font-size:14.5px;letter-spacing:.02em}
+.rd-tile span{color:var(--dim);font-size:12px}
+.rd-card{background:var(--panel);border:1px solid var(--seam);border-radius:14px;padding:14px;margin:10px 0;position:relative}
+.rd-card.fix{border-color:#5a4408;box-shadow:inset 0 3px 0 var(--amber)}
+.rd-hole{position:absolute;top:10px;right:12px;width:12px;height:12px;border-radius:50%;background:var(--bg);border:2px solid var(--seam)}
+.rd-crumb{font:700 10.5px var(--mono);letter-spacing:.09em;color:var(--dim);text-transform:uppercase;margin-bottom:8px;display:flex;flex-wrap:wrap;gap:4px}
+.rd-crumb i{font-style:normal;color:var(--amber)}
+.rd-q{font-size:17px;font-weight:750;letter-spacing:.01em}
+.rd-help{color:var(--dim);font-size:13px;margin-top:6px}
+.rd-opts{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+.rd-opt{background:var(--panel2);border:1px solid var(--seam);border-radius:12px;color:var(--ink);padding:14px 12px;min-height:52px;text-align:left;font-size:15px;font-weight:600;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.rd-opt:active{border-color:var(--amber)}
+.rd-opt em{font-style:normal;color:var(--amber);font:800 12px var(--mono)}
+.rd-fixhead{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.rd-fixstamp{font:800 10px var(--mono);letter-spacing:.12em;background:var(--amber);color:var(--amber-ink);padding:4px 7px;border-radius:5px}
+.rd-fixtitle{font-size:16.5px;font-weight:800}
+.rd-steps{margin:8px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:7px;font-size:14.5px}
+.rd-warn{display:flex;gap:8px;background:#2a1512;border:1px solid #5a251f;color:#ffb4ab;border-radius:10px;padding:10px;margin-top:10px;font-size:13.5px}
+.rd-verify{margin-top:10px;font-size:13.5px;color:var(--ok);display:flex;gap:7px;align-items:flex-start}
+.rd-jump{margin-top:12px;width:100%;background:var(--amber);color:var(--amber-ink);font-weight:800;border:0;border-radius:12px;min-height:50px;font-size:15px}
+.rd-ghost{margin-top:8px;width:100%;background:transparent;border:1px dashed var(--seam);color:var(--dim);border-radius:12px;min-height:44px;font-size:13px}
+.rd-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.rd-in{background:var(--panel2);border:1px solid var(--seam);color:var(--ink);border-radius:10px;padding:12px;font:600 16px var(--mono);width:100%;min-height:48px}
+.rd-in::placeholder{color:#5d6771;font-family:system-ui;font-weight:400;font-size:14px}
+.rd-sel{appearance:none;background:var(--panel2);border:1px solid var(--seam);color:var(--ink);border-radius:10px;padding:12px;font-weight:700;min-height:48px}
+.rd-lbl{font:700 11px var(--mono);letter-spacing:.1em;color:var(--dim);text-transform:uppercase;margin:10px 0 5px;display:block}
+.rd-out{background:var(--bg);border:1px solid var(--seam);border-radius:10px;padding:12px;margin-top:10px;font-family:var(--mono)}
+.rd-big{font:800 26px var(--mono);letter-spacing:-.01em}
+.rd-ok{color:var(--ok)} .rd-bad{color:var(--trip)} .rd-amb{color:var(--amber)}
+.rd-chip{background:var(--panel2);border:1px solid var(--seam);color:var(--dim);border-radius:99px;padding:9px 13px;font-size:12.5px;font-weight:700;min-height:40px}
+.rd-chip.on{background:var(--amber);color:var(--amber-ink);border-color:var(--amber)}
+.rd-chips{display:flex;gap:7px;overflow-x:auto;padding:2px 0 8px;scrollbar-width:none}
+.rd-code{border-top:1px solid var(--seam);padding:11px 2px;display:flex;gap:10px}
+.rd-code code{font:800 13px var(--mono);color:var(--amber);min-width:74px}
+.rd-code p{margin:0;font-size:13.5px}
+.rd-code p b{display:block;font-size:13.5px}
+.rd-code p span{color:var(--dim);font-size:12.5px}
+.rd-nav{position:fixed;bottom:0;left:0;right:0;background:#0c0f11f2;border-top:1px solid var(--seam);display:flex;max-width:560px;margin:0 auto;backdrop-filter:blur(8px)}
+.rd-nav button{flex:1;background:none;border:0;color:var(--dim);padding:9px 0 max(9px,env(safe-area-inset-bottom));display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10px;font-weight:700;letter-spacing:.05em}
+.rd-nav button.on{color:var(--amber)}
+.rd-tbl{width:100%;border-collapse:collapse;font:600 13px var(--mono)}
+.rd-tbl td,.rd-tbl th{border-bottom:1px solid var(--seam);padding:7px 6px;text-align:right}
+.rd-tbl th{color:var(--dim);font:700 10.5px var(--mono);letter-spacing:.08em;text-transform:uppercase}
+.rd-tbl td:first-child,.rd-tbl th:first-child{text-align:left}
+.rd-note{color:var(--dim);font-size:12.5px;margin-top:8px}
+.rd-banner{border:1px solid var(--seam);border-left:3px solid var(--amber);background:var(--panel);border-radius:10px;padding:10px 12px;font-size:13px;color:var(--dim);margin:10px 0}
+.rd-logent{border:1px solid var(--seam);border-radius:12px;padding:12px;margin-top:10px;background:var(--panel)}
+.rd-logent h4{margin:0;font-size:15px;display:flex;justify-content:space-between;gap:8px}
+.rd-logent time{color:var(--dim);font:600 11px var(--mono)}
+.rd-pre{white-space:pre-wrap;font:600 12.5px var(--mono);color:var(--ink);background:var(--bg);border:1px solid var(--seam);border-radius:10px;padding:10px;margin-top:8px}
+.rd-iconbtn{background:var(--panel2);border:1px solid var(--seam);color:var(--dim);border-radius:10px;min-width:44px;min-height:44px;display:flex;align-items:center;justify-content:center}
+@media(prefers-reduced-motion:no-preference){.rd-opt,.rd-tile{transition:border-color .12s,background .12s}}
+`;
+
+/* ---------- DIAGNOSTIC TREES ---------- */
+const TREES = [
+  ["no_cool","NC","No cooling","Dead unit to bad contactor — full power-up chain"],
+  ["weak_cool","WC","Weak cooling","Split triage: airflow vs economizer vs charge vs staging"],
+  ["airflow","AF","Blower / airflow","Belt drive, direct drive + VFD, static pressure"],
+  ["econ","EC","Economizer","Jade W7220, actuator, sensors, free cooling"],
+  ["high_head","HH","High head","Per-circuit: coil, fans, overcharge, non-condensables"],
+  ["low_suction","LS","Low suction","Airflow first, then charge vs TXV vs restriction"],
+  ["fan","CF","Condenser fan","Dead, hums, thermal cycling, slow or reversed"],
+  ["comp","CP","Compressor","Hums/trips, windings, 3-ph scroll rotation, no pumping"],
+  ["frozen","FZ","Frozen evap","Thaw procedure, then airflow / charge / low load"],
+  ["gas","GH","Gas heat","Inducer → PS → ignition → flame sense → limits"],
+  ["elec","EH","Electric heat","Sequencers, element draw, airflow proving, fuse links"],
+  ["cond","CD","Water / condensate","Trap depth, carryover, pan, rain intrusion"],
+  ["cycling","SC","Trips & lockouts","LP/HP patterns, phase monitor drops, short cycling"]
+];
+const TREE_LABEL = Object.fromEntries(TREES.map(t=>[t[0],t[2]]));
+const TREE_STAMP = Object.fromEntries(TREES.map(t=>[t[0],t[1]]));
+const ROOT = {no_cool:"nc_start",weak_cool:"wc_start",airflow:"airflow_start",econ:"econ_start",high_head:"hh_start",low_suction:"ls_start",fan:"cf_start",comp:"cp_start",frozen:"fz_start",gas:"gh_start",elec:"eh_start",cond:"cd_start",cycling:"sc_start"};
+
+const N = {
+/* ===== NO COOLING ===== */
+nc_start:{q:"Unit status on arrival?",h:"Look and listen before pulling panels — what is actually running?",o:[
+  ["Everything dead — no fans, no blower","nc_dead"],
+  ["Indoor blower runs, condenser section quiet","nc_24v"],
+  ["Runs, then trips off / locks out","goto_cycling"]]},
+nc_dead:{q:"Line voltage at the unit? Check ALL legs at the disconnect load side.",h:"3-phase: L1-L2, L2-L3, L1-L3. One blown fuse = single-phasing.",o:[
+  ["No / missing a leg","nc_upstream"],
+  ["All legs present and balanced","nc_24v"]]},
+nc_upstream:{f:"RESTORE LINE POWER",s:[
+  "Check disconnect fuses individually — pull and ohm each one. Replace as a matched set with correct class/size.",
+  "Breaker at the panel: tripped, or burned lug? Torque connections, look for heat discoloration.",
+  "If a fuse blew, find out why before re-energizing: megohm compressor and motors to ground, check for chafed leads at panel penetrations.",
+  "Voltage should be within ±10% of nameplate, imbalance under 2% (Calc tab)."],
+  w:"Single-phasing kills 3-phase motors fast. Never bridge one blown fuse to test.",
+  v:"All legs within 2% of each other under load."},
+nc_24v:{q:"24V control power? Measure R–C at the unit board.",o:[
+  ["No 24V","nc_xfmr"],
+  ["24V present","nc_phase"]]},
+nc_xfmr:{f:"TRANSFORMER / CONTROL FUSE",s:[
+  "Check the board's automotive-style fuse (usually 3A) and any inline secondary fuse.",
+  "Primary side: correct voltage tap for supply (208 vs 230 vs 460)? Measure primary volts.",
+  "Fuse keeps blowing = short on the secondary. Disconnect loads one at a time: compressor contactor coils, fan contactor, economizer actuator, then the stat cable.",
+  "Classic RTU short: thermostat or Y wire chafed at the cabinet entry grommet or under the raceway cover.",
+  "Transformer hums with primary volts but no secondary = open winding, replace with same VA or larger."],
+  v:"24–28V at R–C, stable while everything energizes."},
+nc_phase:{q:"3-phase unit — phase monitor status?",h:"Small relay/module ahead of the control circuit. Green = OK on most.",o:[
+  ["Fault LED / dropped out","nc_pm"],
+  ["OK, or single-phase unit","nc_lockout"]]},
+nc_pm:{f:"PHASE MONITOR FAULT",s:[
+  "Measure all three legs at the monitor: voltage, and imbalance (Calc tab). Over ~2% imbalance or a low leg is a supply problem, not a unit problem.",
+  "Reversed rotation: if this is a first start or after utility work, rotation may truly be reversed — correct by swapping two legs at the LINE side so every motor in the unit stays consistent.",
+  "Loose lugs at the disconnect or monitor cause nuisance drops — torque and look for discoloration.",
+  "If supply checks clean and settings are right, the monitor itself can fail — verify its output contact with power confirmed good."],
+  w:"Correct rotation at the source, not per-motor, unless a single motor was miswired.",
+  v:"Monitor holds in through a full start under load."},
+nc_lockout:{q:"Any lockout / flash code on the board?",h:"Rapid flash usually = lockout. Check HP, LP, freezestat LEDs or stored codes. Codes tab has common patterns.",o:[
+  ["High pressure lockout","goto_high_head"],
+  ["Low pressure lockout","goto_low_suction"],
+  ["Freezestat","goto_frozen"],
+  ["No code / steady","nc_y1"]]},
+nc_y1:{q:"Cooling call reaching the unit? 24V Y1–C at the board?",o:[
+  ["No Y1","nc_stat"],
+  ["Y1 present","nc_cont"]]},
+nc_stat:{f:"NO CALL — STAT / WIRING SIDE",s:[
+  "Verify the stat is actually calling: setpoint below space temp, system on COOL, not in a delay or setback period.",
+  "Jumper R to Y1 at the unit board (briefly). Unit starts = the problem is upstream: stat, zone controller, or the whip.",
+  "Economizer in the loop: on Jade installs Y1 routes through the module — verify wiring per the diagram and that the Jade isn't intercepting the call.",
+  "Ohm the Y conductor end-to-end; check for breaks at the roof penetration and cabinet edge."],
+  v:"Y1 reads 24V at the board with the stat calling."},
+nc_cont:{q:"Compressor contactor: 24V at the coil?",o:[
+  ["No 24V at coil","nc_safety"],
+  ["24V there, contactor NOT pulled in","nc_coil"],
+  ["Pulled in","nc_load"]]},
+nc_safety:{f:"OPEN SAFETY IN SERIES",s:[
+  "Something between the board output and the coil is open. Trace the circuit: HP switch, LP switch, freezestat, and any lockout relay.",
+  "Measure across each switch — 24V across a closed switch means it's open.",
+  "LP open with the system off can be a genuinely low charge (it never had pressure to close). Gauge it before condemning the switch.",
+  "Found the open switch? Diagnose WHY it opened — jump to the matching tree. Don't bypass and walk."],
+  j:["Open Trips & lockouts tree","goto_cycling"],
+  v:"Coil sees 24V with all safeties naturally closed."},
+nc_coil:{f:"CONTACTOR COIL OPEN",s:[
+  "24V at the coil terminals with no pull-in = open coil. Ohm it: open or way off spec, replace the contactor.",
+  "Replace like-for-like on poles and amp rating; torque the lugs.",
+  "Check what killed it — coil burnout is often chronic low control voltage or a cabinet running hot."],
+  v:"Pulls in crisp, no chatter, full seat."},
+nc_load:{q:"Voltage THROUGH the contactor to the compressor terminals?",o:[
+  ["Volts in, missing on load side","nc_contacts"],
+  ["Volts out on all legs","nc_which"]]},
+nc_contacts:{f:"BURNED CONTACTS",s:[
+  "Voltage drop across each pole under load — anything over a few volts, or a dead pole, condemn it.",
+  "Replace the contactor, don't file contacts. Check wire ends for heat damage and cut back to clean copper.",
+  "Pitting cause: chattering from low 24V, or short cycling — verify control voltage under load and check the Trips tree if it recurs."],
+  v:"Millivolt-level drop across each closed pole under load."},
+nc_which:{q:"Power is reaching the condenser section. What's it doing?",o:[
+  ["Compressor hums or trips","goto_comp"],
+  ["Compressor runs, condenser fan dead","goto_fan"],
+  ["Runs but no cooling effect","goto_comp"],
+  ["Both dead with voltage present","goto_comp"]]},
+
+/* ===== WEAK COOLING ===== */
+wc_start:{q:"Measure ΔT split: return minus supply, mech cooling running.",h:"Probe in the return and supply near the unit. Normal ~16–22°F at moderate humidity.",o:[
+  ["Over 22°F — big split","goto_airflow"],
+  ["14–22°F — near normal","wc_load"],
+  ["Under 14°F — low split","wc_low"]]},
+wc_load:{f:"UNIT OK — LOAD / RUNTIME PROBLEM",s:[
+  "Split is healthy. Look at load and runtime: doors/dock open, added equipment, occupancy changes.",
+  "Two-stage unit: confirm Y2 actually stages — watch it, don't assume. Stat staging config and differential matter.",
+  "Check total runtime vs recovery: setback recovery mornings can look like 'not cooling.'",
+  "Verify economizer is at minimum position during peak — even a partly-open damper adds load on a 90° day."],
+  v:"Space pulls down with both stages proven running."},
+wc_low:{q:"Economizer damper position while mech cooling runs?",h:"#1 RTU capacity killer: damper open past minimum dumping hot roof air in.",o:[
+  ["Open past minimum","goto_econ"],
+  ["At min / closed","wc_stages"]]},
+wc_stages:{q:"Dual circuit or 2-stage: are ALL compressors running on a full call?",o:[
+  ["A circuit never starts","wc_c2"],
+  ["All running","wc_charge"]]},
+wc_c2:{f:"DEAD STAGE / CIRCUIT",s:[
+  "Confirm Y2 (or the lag call) reaches the board — stat config first, many are left set for single stage.",
+  "24V at that circuit's contactor coil? If not, trace that circuit's own HP/LP/freezestat string.",
+  "Coil good, contactor good, still no start — work that compressor directly.",
+  "Amp-clamp each compressor to prove which is real — dual scrolls sound alike from the roof hatch."],
+  j:["Open Compressor tree","goto_comp"],
+  v:"Both circuits pulling normal RLA on a Y1+Y2 call."},
+wc_charge:{q:"Gauges on, per circuit: superheat and subcool?",h:"Calc tab does SH/SC from pressure + line temp.",o:[
+  ["SH high, SC low","goto_low_suction"],
+  ["SH high, SC normal/high","goto_low_suction"],
+  ["Both near targets","wc_clean"]]},
+wc_clean:{f:"CAPACITY LOSS, CHARGE OK",s:[
+  "Dirty evap coil or blower wheel cuts capacity with near-normal readings — inspect with a light, clean if you can't see through the coil.",
+  "Condenser recirculation: parapet walls, adjacent units, discharge blowing back into intake raises head and eats capacity on hot days.",
+  "Belt slipping under load: reads fine at idle, slips loaded — check tension and glazing (Airflow tree).",
+  "Verify against nameplate: amps per circuit vs RLA, and sat temps vs outdoor/return conditions."],
+  v:"Split recovers into the 16–22°F band at steady state."},
+
+/* ===== AIRFLOW / BLOWER ===== */
+airflow_start:{q:"Is the indoor blower running on a G or Y call?",o:[
+  ["Not running at all","af_dead"],
+  ["Runs, airflow weak","af_weak"],
+  ["Runs, noisy / vibrating","af_noise"]]},
+af_dead:{q:"Drive type?",o:[
+  ["Belt drive, contactor-started","af_beltdead"],
+  ["Direct drive on a VFD","af_vfd"]]},
+af_beltdead:{q:"24V at the fan contactor coil?",o:[
+  ["No 24V","af_interlock"],
+  ["24V, pulled in, motor dead","af_motordead"],
+  ["Motor hums, won't spin","af_hum"]]},
+af_interlock:{f:"FAN CALL BLOCKED — CHECK INTERLOCKS",s:[
+  "SMOKE DETECTOR first: supply and/or return duct smokes kill the blower circuit on most commercial RTUs. Check status LEDs and reset only after inspecting.",
+  "Freezestat and any DPS/air proving in the fan circuit — measure across each.",
+  "Board G logic: does the board show a fan output? Jumper R–G at the board to isolate stat side vs board side.",
+  "Occupancy/BAS: fan may be commanded off in unoccupied mode — verify schedule before chasing wires."],
+  w:"A tripped duct smoke means something set it off — inspect before reset.",
+  v:"Blower starts on G and holds through a full cycle."},
+af_motordead:{f:"BLOWER MOTOR DEAD, POWER PRESENT",s:[
+  "Verify voltage at the motor leads, not just the contactor.",
+  "Internal overload may be open hot — give it 30–60 min, then re-check.",
+  "Ohm windings: open winding = replace. Single-phase: test the run capacitor (±6%, Calc tab).",
+  "When replacing: match HP, RPM, frame, voltage and rotation; new capacitor with every motor."],
+  v:"Amps under nameplate FLA at design static."},
+af_hum:{f:"BLOWER HUMS, NO SPIN",s:[
+  "Kill power, spin the shaft by hand: seized bearings vs free.",
+  "Free shaft + hum = capacitor (single-phase) — test, replace with exact µF/voltage.",
+  "3-phase hum = lost leg: check each fuse and contactor pole.",
+  "Seized: replace bearings (belt-drive pillow blocks) or the motor; check pulley alignment that side-loaded it."],
+  v:"Starts instantly, amps within FLA."},
+af_vfd:{q:"VFD status?",o:[
+  ["Display dead","af_vfddead"],
+  ["Showing a fault code","af_vfdfault"],
+  ["Ready, but no run","af_vfdnorun"]]},
+af_vfddead:{f:"VFD NO DISPLAY",s:[
+  "Line voltage at drive input terminals — check drive fusing and the disconnect.",
+  "Some drives have a separate control power fuse or 24V supply — check it.",
+  "Input power good, display dead = drive failure. Record model and get an exact or programmed replacement.",
+  "Before condemning, note any burnt smell / bulged caps — and find out what killed it (spikes, heat, condensation)."],
+  v:"Drive boots to a ready state on power-up."},
+af_vfdfault:{f:"VFD FAULT — DECODE IT",s:[
+  "OC (overcurrent): mech bind — turn the wheel by hand; motor short — megohm; accel time too short.",
+  "OV (overvoltage): usually on decel — lengthen decel time; check line spikes.",
+  "UV (undervoltage): supply sag or lost leg during run — log line volts.",
+  "OH (overheat): drive cooling fan dead, clogged heatsink, cabinet heat.",
+  "OL (overload): parameters vs motor FLA — verify the drive is programmed to THIS motor.",
+  "Clear once, watch it fault again while metering. Codes tab → VFD for the generic set."],
+  v:"Runs a full cycle loaded with no re-fault."},
+af_vfdnorun:{f:"VFD READY, NO RUN COMMAND",s:[
+  "Check the run digital input — is the board/BAS actually commanding it? Jumper the run DI briefly to isolate.",
+  "Speed reference present? 0–10V or 4–20mA at the analog input; zero ref = zero speed even with run.",
+  "Safeties wired through the run circuit: duct smoke, freezestat — verify each.",
+  "Enable/safety jumper on the drive itself: some strip out during service and never go back."],
+  v:"Ramps to commanded speed on a normal call."},
+af_weak:{q:"Belt condition and tension?",o:[
+  ["Loose, glazed, cracked, or shiny sidewalls","af_belt"],
+  ["Belt good (or direct drive)","af_static"]]},
+af_belt:{f:"BELT / SHEAVE SERVICE",s:[
+  "Tension: about 1/64\" deflection per inch of span at moderate thumb force. Loose slips under load; over-tight kills bearings.",
+  "Glazed or cracked = replace. Check sheave grooves — worn (dished) grooves let a new belt ride low and slip. Replace sheaves in that case.",
+  "Alignment: straightedge across both sheave faces; set screws tight on flats.",
+  "RPM check: motor RPM × motor sheave PD ÷ blower sheave PD (Calc tab). Adjustable sheaves drift — verify turns-open."],
+  v:"No squeal on start; airflow and static back to design."},
+af_noise:{f:"NOISE / VIBRATION",s:[
+  "Bearings: side/axial play at the shaft, growling = replace pillow blocks; check set screws on the shaft flats.",
+  "Wheel: dirt buildup throws balance — clean it; check for a shifted wheel rubbing the housing, re-center and lock.",
+  "Belt slap = tension/alignment. Motor mount and isolators loose or collapsed.",
+  "3-phase direct drive making a hard growl at start: verify rotation."],
+  v:"Smooth run, no rub, bearing temps normal."},
+af_static:{q:"Total external static vs design (typ 0.5–1.0\" on RTUs)?",h:"Probe supply and return at the unit; add the two magnitudes.",o:[
+  ["High static","af_histatic"],
+  ["Low static + weak air","af_lostatic"]]},
+af_histatic:{f:"HIGH STATIC — RESTRICTION",s:[
+  "Filters first — loaded filters are half of these calls. Verify size and count; missing filters foul the coil next.",
+  "Evap coil: inspect BOTH faces. A coil you can't see light through needs a real cleaning, pulled if necessary.",
+  "Downstream: closed fire/balancing dampers, VAV boxes commanded shut, crushed flex at takeoffs.",
+  "Return path: blocked grilles, collapsed return, economizer section obstruction."],
+  v:"Static at design and split in the normal band."},
+af_lostatic:{f:"LOW STATIC + WEAK FLOW",s:[
+  "Wheel slipping on the shaft (sheared key / loose hub) — moves air poorly at full RPM. Check hub set screws.",
+  "Dirty wheel: buildup on blade cups kills capacity before it looks dramatic — clean it.",
+  "3-phase blower running BACKWARD moves ~30–50% air quietly. Verify rotation arrow.",
+  "Duct blowoff/leak before the space; check RPM with a tach vs design (Calc tab for sheave math)."],
+  v:"Design CFM confirmed — temp-rise method in Calc gives a solid field number."},
+
+/* ===== ECONOMIZER ===== */
+econ_start:{q:"What's the economizer complaint?",o:[
+  ["Damper stuck open / too much OA","ec_open"],
+  ["Never free-cools","ec_nofc"],
+  ["Hunting / erratic damper","ec_hunt"],
+  ["Jade showing an alarm","ec_alarm"]]},
+ec_open:{q:"Jade: STATUS/CHECKOUT — command vs actual position. Actuator signal at 2V (closed cmd) but damper open?",h:"Checkout mode drives the damper full stroke — use it.",o:[
+  ["Commanded closed, sitting open","ec_act"],
+  ["Being COMMANDED open","ec_cmdopen"]]},
+ec_act:{f:"ACTUATOR / LINKAGE",s:[
+  "Hub set screw loose on the damper shaft is the classic — actuator turns, blade doesn't. Tighten on the flat.",
+  "Drive it in checkout mode: no motion with signal changing = failed actuator, replace (note direct-coupled model and rotation).",
+  "Linkage/jackshaft binding or disconnected on multi-section dampers; blade edge seals folded and jamming.",
+  "Verify closed means CLOSED: look at the blades, don't trust the readout."],
+  v:"Full smooth stroke in checkout, blades seat at minimum."},
+ec_cmdopen:{f:"IT'S BEING TOLD TO OPEN",s:[
+  "Free cooling active: if OA is below changeover, damper modulating open WITH a cool call is correct operation.",
+  "Changeover setpoint too high (DRYBLB setting) opens it on warm days — verify setting vs spec.",
+  "DCV: a CO2 sensor above setpoint drives extra OA — check the reading and setpoint.",
+  "Minimum position set too high — verify against design OA and the balance report if there is one."],
+  v:"Damper at true minimum with OA above changeover."},
+ec_nofc:{q:"Is free cooling being ENABLED? Jade STATUS on a cool day/night.",o:[
+  ["Never enables","ec_enable"],
+  ["Enables, damper won't drive","ec_act"]]},
+ec_enable:{f:"FREE COOLING NOT ENABLING",s:[
+  "Changeover config: dry bulb vs enthalpy setting must match the sensor actually installed (S-bus enthalpy vs plain OAT).",
+  "OA sensor reading sane? Compare Jade's OAT display to your meter — a failed-high sensor blocks free cooling forever.",
+  "Y1 routing: free cooling needs the call routed through the Jade per the diagram — verify terminals.",
+  "Setpoint just set too conservative (e.g. 50°F) — economizing barely ever qualifies. Set per spec/climate."],
+  v:"Cool-day call: damper modulates, mech cooling holds off or stages behind it."},
+ec_hunt:{f:"HUNTING / ERRATIC",s:[
+  "MAT sensor placement: too close to the damper or coil gives a jumpy mixed-air reading the loop chases. Relocate for good mixing.",
+  "Loose hub or sloppy linkage adds mechanical slop — loop overshoots. Fix the slop first.",
+  "Check the 2–10V signal with a meter: unstable signal = controller/wiring; stable signal + jumpy damper = mechanical.",
+  "Sensor wiring runs beside line voltage pick up noise — reroute or shield."],
+  v:"Damper settles and holds; MAT steady within a couple degrees."},
+ec_alarm:{f:"JADE ALARM SHOWING",s:[
+  "MAT SENS ERR: mixed air sensor open/shorted — required sensor, Jade won't run right without it. Check wiring, then replace.",
+  "OAT / OA SENS ERR: outdoor sensor or S-bus enthalpy fault — verify connections at the sensor and module.",
+  "CO2 SENS ERR: DCV sensor fault — check power and signal type config.",
+  "ACT ERROR / actuator alarm: stroke blocked or actuator disconnected — run checkout, fix mechanics.",
+  "Cycle through STATUS and confirm every sensor reads plausible against your meter."],
+  v:"No active alarms; STATUS values match measured reality."},
+
+/* ===== HIGH HEAD ===== */
+hh_start:{q:"Dual circuit: is head high on BOTH circuits or one?",h:"Single circuit unit → treat as 'both'.",o:[
+  ["Both / single circuit","hh_air"],
+  ["One circuit only","hh_ckt"]]},
+hh_air:{q:"Condenser coil and fans — eyes on them.",o:[
+  ["Coil dirty / fins blocked","hh_coil"],
+  ["A fan not running (multi-fan)","goto_fan"],
+  ["Coil clean, all fans running","hh_amb"]]},
+hh_coil:{f:"CONDENSER COIL SERVICE",s:[
+  "Clean in reverse of airflow, straight-on spray — angled pressure folds fins. Comb bent sections.",
+  "Pull cottonwood/debris mats off the intake face; check between coil slabs on units with wrapped or dual-slab condensers (crud hides in the middle).",
+  "Recirculation: parapet walls, adjacent RTU discharge, or added screens re-feed hot discharge air — sat temp climbs on wind-still days.",
+  "Hail guards packed with debris act like a dirty coil — pull and clean behind them."],
+  v:"Cond sat temp ≈ ambient +20–30°F at steady state."},
+hh_amb:{f:"CLEAN COIL, STILL HIGH — CHARGE/GAS SIDE",s:[
+  "Check subcool on both circuits: very high SC on both = overcharged (was it 'topped off' recently?). Recover to nameplate charge/target SC.",
+  "Non-condensables: with the unit off and pressures equalized, standing pressure should match the PT chart at ambient. Reading high = air in the system → recover, evacuate below 500 microns, weigh charge back in.",
+  "Verify fan rotation on 3-phase condenser fans — backward fans move little air and look 'running'.",
+  "Genuinely extreme ambient + high load: head will be high-normal — judge against PT, not gut feel."],
+  v:"Head tracks PT at ambient +20–30°F, SC on target."},
+hh_ckt:{q:"On the HIGH circuit: what's the subcool doing?",o:[
+  ["SC very high","hh_over"],
+  ["SC normal / low","hh_gas"]]},
+hh_over:{f:"OVERCHARGE OR LIQUID RESTRICTION",s:[
+  "Overcharge: high head + high SC + normal-to-low suction. History of top-offs is the tell. Recover to target SC or weighed charge.",
+  "Liquid restriction: feel the filter-drier — more than ~3°F drop across it (or a sweat/frost line) = plugged, replace it.",
+  "Kinked liquid line or partially closed king valve after service does the same thing — trace the line.",
+  "After correcting, re-run both circuits to steady state and log SH/SC per circuit."],
+  v:"SC in the 8–12°F band (or plate spec), drier ΔT under 3°F."},
+hh_gas:{f:"NON-CONDENSABLES IN ONE CIRCUIT",s:[
+  "One circuit high with normal SC and a clean coil points at air in that circuit — usually a poor evac after a repair.",
+  "Confirm: circuit off, pressures equalized to ambient temp — standing pressure above PT chart value = non-condensables.",
+  "Fix is recover, deep vacuum (<500 microns, decay-tested), weigh charge back.",
+  "While it's open: replace the liquid drier, and pressure-test if the original repair is suspect."],
+  v:"Standing pressure matches PT at ambient after the fix."},
+
+/* ===== LOW SUCTION ===== */
+ls_start:{q:"Is the evap coil iced?",o:[
+  ["Yes / partially","goto_frozen"],
+  ["No ice","ls_air"]]},
+ls_air:{q:"Airflow verified good? (split, static, belt, filters)",h:"Low airflow is the #1 false 'low charge' call.",o:[
+  ["No / not sure","goto_airflow"],
+  ["Airflow solid","ls_shsc"]]},
+ls_shsc:{q:"Superheat and subcool on the low circuit?",o:[
+  ["SH high + SC LOW","ls_charge"],
+  ["SH high + SC normal/high","ls_txv"],
+  ["SH low + suction low","ls_load"]]},
+ls_charge:{f:"UNDERCHARGE — FIND THE LEAK",s:[
+  "Low SC + high SH + low suction = it's short on refrigerant. Don't just gas it up — find the leak.",
+  "High-percentage RTU leak spots: coil U-bends and rub-outs where tubes touch, braze joints at headers, Schrader cores (cap them tight), king valve packing, and rubbed spots where lines cross sheet metal.",
+  "Electronic detector on a still day, bubbles to confirm. Check BOTH coils.",
+  "Repair, pressure test with nitrogen, evacuate <500 microns with a decay test, then WEIGH the charge to nameplate. Trim to target SC.",
+  "Log the found leak location — repeat units repeat failures."],
+  v:"SH/SC on target after 15 min steady; leak site verified dry."},
+ls_txv:{f:"TXV / METERING STARVING",s:[
+  "SC normal-or-high with SH high = liquid is available, valve isn't feeding. Classic starving TXV.",
+  "Bulb first: strap tight on clean pipe at the proper clock position, fully insulated. A loose or uninsulated bulb underfeeds.",
+  "Inlet screen: temperature drop right at the valve inlet = plugged screen — clean or replace the valve.",
+  "Power head test: warm the bulb in your hand — suction should climb as the valve opens. No response = dead power head/lost bulb charge → replace valve or head.",
+  "Filter-drier ΔT over ~3°F = restriction upstream doing the same thing — replace it."],
+  v:"SH pulls into 8–14°F at the evap and tracks load."},
+ls_load:{f:"LOW LOAD, NOT LOW CHARGE",s:[
+  "Low SH + low suction = coil isn't seeing heat. Blocked return path, closed VAV boxes, filthy filters — verify even if 'airflow was checked'.",
+  "Economizer minimum dumping cold OA into the return path during mild weather drops coil load — verify min position and mixed air temp.",
+  "Very low return temps (night, setback, unoccupied cooling) will ride the suction down — this is operation, not failure. Freezestat should be protecting; verify it works.",
+  "If it locked out on LP overnight repeatedly: check the Trips tree for the pattern."],
+  j:["Open Trips & lockouts tree","goto_cycling"],
+  v:"Suction sat above freezing under real load."},
+
+/* ===== CONDENSER FAN ===== */
+cf_start:{q:"Condenser fan state?",o:[
+  ["Dead — no hum","cf_nohum"],
+  ["Hums, won't spin","cf_hum"],
+  ["Runs, then cycles off hot","cf_cycle"],
+  ["Slow, or blowing the wrong way","cf_slow"]]},
+cf_nohum:{q:"Voltage at the motor leads with a cooling call?",o:[
+  ["No volts","cf_ctrl"],
+  ["Volts present","cf_openwind"]]},
+cf_ctrl:{f:"NO POWER TO FAN — CONTROL SIDE",s:[
+  "Multi-fan units stage fans: a head-pressure fan-cycling switch or board output holds lag fans off at low head — that can be NORMAL. Verify the staging scheme first.",
+  "Fan cycling switch: measure across it — open with high head = failed switch.",
+  "Check the fan's own contactor/relay and any inline fuse; then the lead itself for breaks at the motor mount rub point.",
+  "Board-controlled fans: confirm the output with the board's own diagnostics before condemning wiring."],
+  v:"All fans on when head calls for them; staging matches design."},
+cf_openwind:{f:"VOLTS PRESENT, DEAD MOTOR",s:[
+  "Ohm the windings: open = replace. Hot motor may be on internal overload — let it cool 30–60 min and re-test before condemning.",
+  "Replace with matching HP, RPM, voltage, rotation, and shaft — and ALWAYS a new run capacitor.",
+  "Set blade height per the shroud spec (blade depth in venturi matters for airflow).",
+  "Find the killer: seized bearings, wrong cap, or cooking from high head — check amps after."],
+  v:"Amps at/under FLA, blade positioned per spec."},
+cf_hum:{f:"HUMS, WON'T SPIN",s:[
+  "Power off — spin by hand. Seized = bearings gone, replace motor.",
+  "Spins free: run capacitor. Test it (Calc tab: 2652 × A ÷ V under load, or bench µF) — beyond ±6% of rating, replace.",
+  "3-phase fan humming = single-phasing: check each leg and fuse.",
+  "Cap replaced and it runs: check amps — a motor that cooked its cap may be next."],
+  v:"Instant start, no hum lag, amps normal."},
+cf_cycle:{f:"THERMAL CYCLING",s:[
+  "Motor cutting out on internal overload. Check amps vs FLA under real head pressure — not at idle.",
+  "Low line voltage or a weak cap raises amps — verify both.",
+  "Bearing drag: spin test warm. Dust-packed motor shell can't shed heat — blow it out.",
+  "Confirm it's not the fan-cycling control doing its job — watch head pressure when it drops out."],
+  v:"Runs continuously at design head, amps steady under FLA."},
+cf_slow:{f:"SLOW / REVERSED",s:[
+  "3-phase: rotation reversed after service or utility work. If the WHOLE unit is reversed, fix at the line side. If only this motor, swap two leads at ITS connection.",
+  "Single-phase slow: weak run cap — test it before condemning the motor.",
+  "Wrong replacement RPM (1075 vs 850) moves the wrong air quietly — check the motor plate.",
+  "Blade on upside down or wrong blade pitch after a repair does the same — verify airflow direction OUT the top."],
+  v:"Discharge air blasting up, head pressure normal."},
+
+/* ===== COMPRESSOR ===== */
+cp_start:{q:"Compressor symptom?",o:[
+  ["Hums / trips breaker or OL","cp_lra"],
+  ["Runs, little or no pumping","cp_pump"],
+  ["Dead — no hum, volts present","cp_open"],
+  ["Was running, now off on internal OL (shell hot)","cp_hot"]]},
+cp_hot:{f:"INTERNAL OVERLOAD OPEN — HOT SHELL",s:[
+  "It will reset on its own once cool — could be 1–2 hours. Use the time to find the CAUSE.",
+  "Cooling problems that cook compressors: dirty condenser/high head, dead cond fan, LOW charge (scrolls cool on suction gas), voltage sag/imbalance, pitted contactor.",
+  "Check the run cap (single-phase) and megohm to ground while it cools.",
+  "When it resets: start it, log volts each leg, amps vs RLA, head/suction. Fix what you find or it's coming back."],
+  v:"Restarts cool, amps ≤ RLA, sat temps normal."},
+cp_lra:{q:"Single-phase or 3-phase?",o:[
+  ["Single-phase","cp_1ph"],
+  ["3-phase","cp_3v"]]},
+cp_1ph:{f:"1-PH LOCKED ROTOR CHAIN",s:[
+  "Run capacitor first: test µF, replace if past ±6%. Most 'locked' small-tonnage compressors are a $15 cap.",
+  "Start relay/start cap if equipped — inspect and test.",
+  "Verify voltage AT the terminals during the start attempt (±10% of plate).",
+  "All electrical proven good and it still stalls at LRA: mechanically stuck. A hard-start kit is a last-resort test, not a fix, on a scroll.",
+  "Condemn only after cap, voltage, and wiring are proven — caps are the most-misdiagnosed part on the roof."],
+  w:"Discharge capacitors before handling.",
+  v:"Starts clean, amps drop from LRA to ≤ RLA immediately."},
+cp_3v:{q:"Voltage at the compressor terminals DURING the start attempt — balanced?",h:"Imbalance calc is in the Calc tab. >2% = supply problem.",o:[
+  ["Imbalance over 2% / low leg","cp_supply"],
+  ["Balanced within 2%","cp_ohm"]]},
+cp_supply:{f:"FIX THE SUPPLY FIRST",s:[
+  "Never condemn a 3-phase compressor on bad power. Imbalance >2% or a sagging leg under load is upstream.",
+  "Work back: contactor pole drops, lug torque at the disconnect, fuse condition (one weak fuse = high-resistance leg).",
+  "Log all three legs unit-off vs starting vs running. Sag only under load = connection or utility.",
+  "Utility-side imbalance: document and report — the unit can't fix that."],
+  v:"Under 2% imbalance through a full start, per Calc tab."},
+cp_ohm:{f:"WINDING CHECKS → VERDICT",s:[
+  "Kill and lock out power. Ohm T1-T2, T2-T3, T1-T3: should be low, equal (within ~5–7%).",
+  "Open winding: if the shell is hot it may be the internal OL — cool it and re-test before condemning.",
+  "Megohm each terminal to shell: under ~1 MΩ = grounded, condemn (dry the terminals and re-test first — moisture lies).",
+  "Equal windings, balanced power, still stalls at LRA = mechanically seized. Condemn.",
+  "Burnout replacement: acid-test the oil, install a suction filter-drier + new liquid drier, and recover the contaminated charge — don't reuse it."],
+  w:"Grounded compressor circuits can energize the shell — verify absence of voltage before touching terminals.",
+  v:"New comp: rotation verified, amps ≤ RLA, clean start."},
+cp_pump:{q:"3-phase scroll: rotation check.",h:"Reversed scroll: loud, LOW amps, suction and head barely split.",o:[
+  ["Sounds wrong, low amps, no ΔP","cp_rev"],
+  ["Rotation confirmed correct","cp_worn"]]},
+cp_rev:{f:"REVERSED SCROLL — SWAP TWO LEGS",s:[
+  "Confirm first: amps well under RLA, no pressure differential, mechanical racket. That's reverse rotation.",
+  "Whole unit reversed (after utility/disconnect work): swap two legs at the LINE connection so every 3-phase motor corrects together.",
+  "Only this compressor reversed (miswired after replacement): swap two leads at ITS contactor load side.",
+  "Expect the phase monitor to react to a line-side swap — that's it doing its job; verify it's happy after.",
+  "Prolonged reverse running damages scrolls — verify oil sound and performance after correcting."],
+  v:"Amps jump to normal, suction pulls down, head builds immediately."},
+cp_worn:{f:"NOT PUMPING — INTERNAL",s:[
+  "Pressures equalize fast at shutdown, low amps while 'running', poor split at the coil = worn scrolls/internal relief stuck open.",
+  "Rule out external first: TXV flooding, massive bypass (hot gas valve stuck if equipped), gauges on the right ports per circuit.",
+  "Verify with a pump-down style check if valves allow: can it build meaningful differential at all?",
+  "No differential with rotation and charge proven = condemn. Same burnout hygiene: oil test, driers, fresh charge."],
+  v:"Replacement builds full ΔP, amps normal, targets hit."},
+cp_open:{f:"NO HUM, VOLTS PRESENT",s:[
+  "Check right at the terminals — a burned spade or broken lead inside the terminal box is common and cheap.",
+  "Shell hot? Internal overload is open — cool and re-test.",
+  "Shell cool + open winding on the ohmmeter = open motor, condemn.",
+  "Single-phase: check the start components before final verdict."],
+  v:"Continuity restored / verdict backed by winding readings."},
+
+/* ===== FROZEN EVAP ===== */
+fz_start:{q:"Coil state right now?",o:[
+  ["Iced now","fz_thaw"],
+  ["Thawed — find the cause","fz_cause"]]},
+fz_thaw:{f:"CONTROLLED THAW",s:[
+  "Compressors OFF, blower ON — fastest safe thaw and it dries the coil. Heat mode only if the drain can handle the melt rate.",
+  "Never chip ice off a coil. Fins and tubes lose.",
+  "Watch the drain pan: melting ice out-runs the drain — protect what's below and check the trap now while you wait.",
+  "Use the thaw time to check filters, belt, and wheel — the cause is usually one of them."],
+  v:"Coil fully clear, pan draining, THEN diagnose running."},
+fz_cause:{q:"Run it: split and static say what first?",o:[
+  ["Low airflow signs (high split / high static)","goto_airflow"],
+  ["Airflow checks out","fz_chg"]]},
+fz_chg:{q:"Suction saturation below 32°F with HIGH superheat?",o:[
+  ["Yes — low sat + high SH","goto_low_suction"],
+  ["SH normal, still icing","fz_lowload"]]},
+fz_lowload:{f:"LOW LOAD ICING",s:[
+  "Economizer feeding cold OA during mech cooling in mild weather chills the return path — verify min position and changeover behavior.",
+  "Night setback + continuous fan + long low-load runs will creep a coil below freezing — review the sequence and stat programming.",
+  "Freezestat: verify it exists, its location on the coil, and that it actually opens (chill test). It's the last line for this exact failure.",
+  "VAV systems: boxes closed at night starve airflow even with a clean filter rack — check minimum airflow settings."],
+  v:"Coil stays clear through an overnight cycle."},
+
+/* ===== GAS HEAT ===== */
+gh_start:{q:"Call W1. Does the inducer start?",o:[
+  ["No inducer","gh_ind"],
+  ["Inducer runs","gh_ps"]]},
+gh_ind:{f:"INDUCER DEAD",s:[
+  "24V W at the board? No W = stat/wiring side, not the furnace.",
+  "W present: does the board send voltage to the inducer? Measure at the inducer plug. Volts + dead motor = inducer (hums = seized/cap).",
+  "No volts out with W in: check the board fuse and any rollout/limit switches the board reads BEFORE inducer on some sequences.",
+  "Replace inducers with the correct rotation and gasket — a leaking inducer gasket fails the pressure switch next."],
+  v:"Inducer proves and holds through ignition."},
+gh_ps:{q:"Pressure switch closing? Meter ACROSS the switch during the call.",o:[
+  ["Stays open","gh_psopen"],
+  ["Closes","gh_ign"]]},
+gh_psopen:{f:"PRESSURE SWITCH WON'T PROVE",s:[
+  "Measure actual draft at the tap with a manometer and compare to the rating printed on the switch — that tells you switch vs draft problem.",
+  "Draft weak: blocked flue/vent cap (wasps, screens), plugged switch port or nipple, cracked/soft hose, inducer wheel loose or gasket leaking.",
+  "High-efficiency units: condensate backing up in the collector/trap kills draft — check and clear the trap.",
+  "Draft at spec but no close = failed switch, replace with the same rating. Never jumper it and leave."],
+  w:"The PS is a combustion safety — bypassing it is how flue gas ends up in the airstream.",
+  v:"Draft reads past the switch rating with margin, switch closes crisp."},
+gh_ign:{q:"Ignition attempt: HSI glowing / spark present?",o:[
+  ["No glow / no spark","gh_igniter"],
+  ["Yes","gh_gasvalve"]]},
+gh_igniter:{f:"IGNITER SERVICE",s:[
+  "HSI: measure voltage at the igniter during the trial (80V or 120V per type). Volts + no glow = open igniter — confirm with an ohm check (typ ~40–90Ω cold for 120V silicon carbide; silicon nitride differs).",
+  "Handle by the base — skin oils crack hot-surface igniters. Inspect for hairline cracks.",
+  "No volts to the igniter: board sequence — check limits/rollouts in the string ahead of ignition.",
+  "Spark systems: gap, cracked ceramic, chafed HT lead grounding out before the electrode."],
+  v:"Strong glow/spark exactly at the trial window."},
+gh_gasvalve:{q:"24V at the gas valve during the trial?",o:[
+  ["No 24V","gh_string"],
+  ["24V, no flame","gh_gas"],
+  ["Lights, then drops out","gh_sense"],
+  ["Lights and holds","gh_cycleq"]]},
+gh_string:{f:"BOARD WITHHOLDING GAS",s:[
+  "A limit, rollout, or aux switch open in the valve circuit — meter across each one in the string.",
+  "Rollout tripped: STOP — inspect the heat exchanger and venting before any reset. Rollouts trip for flame coming out the front.",
+  "Some boards hold the valve off on a flame-sense fault from a previous cycle — check stored codes.",
+  "Verify the sequence timing: valve energizes only inside the ignition trial window."],
+  w:"Never reset a rollout without a heat-exchanger and vent inspection.",
+  v:"Valve gets 24V in the trial with all safeties naturally closed."},
+gh_gas:{f:"VALVE POWERED, NO FLAME",s:[
+  "Inlet gas pressure: minimum per plate (typ ~4.5–5\" WC natural gas) WITH other appliances firing. Low inlet = supply/regulator issue.",
+  "Outlet/manifold pressure during the trial: zero with 24V applied = stuck valve, replace it.",
+  "LP: check tank level and regulator, verify the unit is actually converted (orifices + spring/plate).",
+  "Air in the line after piping work — bleed and retry the trial."],
+  v:"Manifold pressure at plate spec (typ 3.2–3.8\" NG) with stable ignition."},
+gh_sense:{f:"FLAME SENSE DROPOUT",s:[
+  "Measure flame current in series with the sensor rod: healthy is roughly 1–6 µA; most boards drop out below ~0.5–1.",
+  "Clean the rod with fine emery/Scotch-Brite (not coarse sandpaper), re-check the gap so it sits in the flame envelope.",
+  "GROUND is half the circuit: burner ground strap, rusted burner brackets, and unit bond — clean and tighten.",
+  "Check L/N polarity on the line side — reversed polarity kills flame rectification on many boards.",
+  "All burners lighting? Dirty crossover ports light burner 1 but not the one holding the rod — clean the burner assembly."],
+  v:"Flame current steady and comfortably above dropout through a full cycle."},
+gh_cycleq:{q:"Holds flame — but is it short-cycling on a limit?",o:[
+  ["Yes, cycles on high limit","gh_limit"],
+  ["Rollout has been tripping","gh_rollout"],
+  ["Runs fine now (intermittent complaint)","gh_intermit"]]},
+gh_limit:{f:"HIGH LIMIT CYCLING",s:[
+  "Measure temp rise (SA − RA in heat) against the nameplate range. High rise = not enough air or too much fire.",
+  "Airflow side: filters, belt tension, blower speed tap/RPM for heating, closed dampers. Fix airflow FIRST — it's most of these.",
+  "Fire side: clock the meter and check manifold pressure (set to plate, typ 3.5\" NG). Overfired units cycle limits and crack exchangers.",
+  "Verify the limit itself only after rise is in range — a limit that trips inside the plate rise range is failing."],
+  w:"Never bypass or 'bigger' a limit.",
+  v:"Rise sits mid-range of plate spec, no limit trips through a long cycle."},
+gh_rollout:{f:"ROLLOUT TRIPS",s:[
+  "Treat as flame escaping the exchanger until proven otherwise: inspect the heat exchanger (scope the cells) and the vestibule for scorching.",
+  "Check venting end-to-end: blocked flue, collapsed vent connector, bird screens.",
+  "Blocked heat exchanger passes push flame out the burner face — soot at the burner inlet is the tell.",
+  "Combustion analysis after any correction; document before returning to service."],
+  w:"A tripping rollout is a red-tag conversation, not a reset-and-run.",
+  v:"Clean burn verified by analyzer, no rollout across multiple cycles."},
+gh_intermit:{f:"INTERMITTENT HEAT FAULT",s:[
+  "Log flame µA over several cycles — a rod at 1.0 µA works today and drops out tonight.",
+  "Marginal pressure switch: draft barely above the rating cuts out in wind — measure with margin, check the vent cap location.",
+  "Wiggle-test connectors at the board and valve while running.",
+  "Pull stored fault codes — the board remembers what you didn't see (Codes tab for common flash patterns)."],
+  v:"Stored codes stay clear across a week of cycles."},
+
+/* ===== ELECTRIC HEAT ===== */
+eh_start:{q:"Call W1. What happens?",o:[
+  ["No heat at all","eh_ctl"],
+  ["Some stages work, some don't","eh_stage"],
+  ["Trips the breaker","eh_trip"]]},
+eh_ctl:{f:"NO HEAT — CONTROL CHAIN",s:[
+  "24V at the sequencer/heat contactor coils? None = board W logic or an interlock.",
+  "Airflow proving: most electric heat interlocks on a fan proving switch — no blower proof, no heat. Verify the blower first, then the switch.",
+  "Sequencers take 30–90 seconds — wait before condemning, then verify their contacts close (meter across).",
+  "Check the heat kit's own door interlock and any limit in the 24V string."],
+  v:"Every stage energizes in sequence on a sustained call."},
+eh_stage:{f:"DEAD STAGE(S)",s:[
+  "Amp-clamp each element leg per stage. 0A with the contactor/sequencer closed = open element or blown fuse link.",
+  "Fuse links open from OVERHEAT — if you find one, find the airflow problem that melted it before replacing.",
+  "Ohm suspect elements: expect roughly V²÷W per element (a 5 kW @ 240V element ≈ 11.5Ω, ~20.8A). Open = replace.",
+  "3-phase heat: check the kit's internal fusing per leg — one blown fuse = a stage at 2/3 output.",
+  "Stuck or open sequencer coil: swap-test or replace; verify stage timing."],
+  v:"Every stage draws plate amps; rise within spec."},
+eh_trip:{f:"BREAKER TRIPS ON HEAT",s:[
+  "Element shorted to frame: megohm each element to ground with power locked out.",
+  "Welded sequencer/contactor bringing everything on at once can exceed the breaker — verify staging actually stages.",
+  "Chafed wiring at the heat kit entry, melted insulation from a previous overheat.",
+  "Verify breaker/wire sizing matches the kit's MCA/MOP plate — mismatched replacements happen."],
+  w:"Lock out and verify absence of voltage before ohming elements.",
+  v:"Full heat call holds without nuisance trips, amps per plate."},
+
+/* ===== CONDENSATE / WATER ===== */
+cd_start:{q:"Where's the water showing up?",o:[
+  ["Ceiling stains / inside below unit","cd_pan"],
+  ["Standing in the unit base / curb","cd_pan"],
+  ["Only during / after RAIN","cd_rain"]]},
+cd_rain:{f:"RAIN INTRUSION, NOT CONDENSATE",s:[
+  "Timing is the tell: dry-weather cooling with no leak + rain leak = envelope, not the coil.",
+  "Usual suspects: economizer hood seams and gaskets, missing panel screws/gaskets, convenience-outlet covers, gas pipe entries.",
+  "Curb: flashing and the curb-to-unit gasket; a unit set slightly off the curb gasket leaks at every rain.",
+  "Hose-test seams section by section on a dry day and watch inside with a light."],
+  v:"Hose test dry inside; next storm confirms."},
+cd_pan:{q:"Unit cooling: is condensate flowing at the drain outlet?",o:[
+  ["No flow","cd_trap"],
+  ["Flows, but still overflowing","cd_carry"]]},
+cd_trap:{f:"DRAIN / TRAP SERVICE",s:[
+  "Clear the trap and line: flush, blow out with nitrogen/CO2, and clean the pan while you're in there (tabs after, not instead of, cleaning).",
+  "TRAP DEPTH matters on RTUs: draw-through coils are under NEGATIVE pressure — the trap must be deeper than the static or the unit sucks air up the drain and the pan just fills. Rule of thumb: depth ≥ negative static + 1\".",
+  "NO trap at all = same symptom. Build a proper one and prime it.",
+  "Vent after the trap helps long horizontal runs drain.",
+  "Verify slope on the drain line — flat runs grow slime plugs fast."],
+  v:"Steady drip/stream at the outlet with the blower running."},
+cd_carry:{f:"CARRYOVER / PAN PROBLEMS",s:[
+  "Water blowing OFF the coil: dirty coil face raises velocity through the clean spots and slings water past the pan — clean the coil.",
+  "Verify airflow isn't excessive (way over ~400 CFM/ton throws water) — temp-rise method in Calc gives you a number.",
+  "Pan itself: rust-through or cracks (patch is temporary, plan replacement), and check the unit is LEVEL on the curb — a tilted pan overflows the low corner.",
+  "Double-check the drain-side coil baffles/eliminators are in place after past service."],
+  v:"Coil face clean, pan dry at the edges at full airflow."},
+
+/* ===== TRIPS & LOCKOUTS ===== */
+sc_start:{q:"What's tripping? Check board history / stored codes first.",o:[
+  ["Low pressure trips","sc_lp"],
+  ["High pressure trips","sc_hp"],
+  ["Phase monitor dropouts","sc_pm"],
+  ["Short cycles, no lockout","sc_short"]]},
+sc_lp:{f:"LP TRIP PATTERN",s:[
+  "WHEN does it trip? Overnight/low-load = load-side (airflow, economizer cold air, setback running) — not necessarily charge.",
+  "Hot-day trips or trips at startup = charge/leak side — gauge it and work Low suction.",
+  "Verify the actual cutout: watch pressure at the moment it opens vs the switch spec.",
+  "Recurring LP with 'charge OK' = intermittent airflow (iced coil self-clearing by morning is classic — look for water evidence)."],
+  j:["Open Low suction tree","goto_low_suction"],
+  v:"A week of runtime with no LP events in board history."},
+sc_hp:{f:"HP TRIP PATTERN",s:[
+  "Afternoon/peak-heat trips: condenser side — dirty coil, a lag fan not staging on, recirculation on still days.",
+  "Verify EVERY condenser fan runs at high head — a dead lag fan hides until the hottest day.",
+  "Random-time trips: overcharge or non-condensables — check SC and standing pressure vs PT.",
+  "Watch an entire high-load cycle with gauges on before calling it fixed."],
+  j:["Open High head tree","goto_high_head"],
+  v:"Head stays ≥30 psi under cutout through peak afternoon."},
+sc_pm:{f:"PHASE MONITOR DROPOUTS",s:[
+  "Log voltage on all legs across time — sags at specific hours point at utility or big loads on the same service.",
+  "Heat-cycle loose lugs drop a leg under load: torque disconnect, monitor, and contactor lugs; look for discoloration.",
+  "Check the monitor's settings (trip %, delay) vs supply reality — an aggressive setting on a soft rural feed nuisance-trips.",
+  "Upstream single-phasing (one weak fuse) shows here first. Ohm all fuses warm."],
+  v:"No drops across several days; legs within 2% under load."},
+sc_short:{f:"SHORT CYCLING, NO FAULT",s:[
+  "Stat side: location (supply air washing the sensor?), deadband/cycle-rate settings, loose Y at the subbase.",
+  "Anti-short-cycle: verify a delay exists (board or timer) — 5 minutes minimum protects the compressor.",
+  "Oversized unit + single stage = fast satisfying and cycling — staging config or airflow tweaks help; document what's design vs defect.",
+  "Economizer interplay: free cooling toggling mech on/off at changeover — widen the deadband."],
+  v:"Runtime cycles look like load, not stutter, in board history."}
+};
+
+/* ---------- FAULT CODE LIBRARY ---------- */
+const BRANDS=["All","Universal","Carrier/Bryant","Trane","Lennox","York/JCI","Goodman","Rheem","Jade econ","VFD"];
+const CODES=[
+{b:"Universal",c:"LED steady",t:"Board powered, no active fault",d:"Normal heartbeat on most RTU boards. Some blink slow for OK — the door legend wins."},
+{b:"Universal",c:"LED off",t:"No board power",d:"Check 24V R–C, the 3A automotive-style board fuse, transformer primary tap and secondary."},
+{b:"Universal",c:"Rapid flash",t:"Hard lockout (typical)",d:"Most boards auto-reset after ~1 hr or on power cycle. Pull the stored code FIRST — resetting erases your evidence."},
+{b:"Universal",c:"1 flash",t:"Ignition lockout — failed trials (common pattern)",d:"Went through its ignition tries without proving flame. Work the gas heat tree: igniter, gas, flame sense. Verify pattern on the door label."},
+{b:"Universal",c:"2 flash",t:"Pressure switch stuck CLOSED (common pattern)",d:"PS closed before the inducer ran. Welded switch or shorted wiring. Verify on door label."},
+{b:"Universal",c:"3 flash",t:"Pressure switch won't CLOSE (common pattern)",d:"Inducer running, no proof: weak draft, plugged port/hose, blocked flue, condensate in the collector. Verify on door label."},
+{b:"Universal",c:"4 flash",t:"Open high limit / rollout (common pattern)",d:"Limit string open. Temp rise vs plate, airflow first. A rollout means HX/vent inspection before reset. Verify on door label."},
+{b:"Universal",c:"5 flash",t:"Flame sensed with gas off (common pattern)",d:"Leaking gas valve or flame-sense circuit fault. Take it seriously — verify valve seals closed."},
+{b:"Universal",c:"Phase monitor",t:"Red/fault LED = supply problem",d:"Rotation, lost leg, imbalance >2%, or under/over voltage. Log all three legs under load; torque lugs. Monitor settings vs supply reality."},
+{b:"Universal",c:"HP switch",t:"Opens on high head",d:"Auto or manual reset per model. Find the cause in the High head tree — don't just reset."},
+{b:"Universal",c:"LP switch",t:"Opens on low suction",d:"May be open at rest on a flat system. Gauge before condemning. Low suction tree for the cause."},
+{b:"Universal",c:"Freezestat",t:"Opens on coil freeze temp",d:"Protects against icing: airflow or low-load problem usually. Frozen evap tree."},
+{b:"Jade econ",c:"MAT SENS ERR",t:"Mixed-air sensor fault",d:"Required sensor — Jade won't control right without it. Check wiring/connection, then replace the sensor."},
+{b:"Jade econ",c:"OAT SENS ERR",t:"Outdoor air sensor fault",d:"Plain OAT or S-bus sensor fault. Free cooling decisions die with it — verify reading vs your meter."},
+{b:"Jade econ",c:"CO2 SENS ERR",t:"DCV sensor fault",d:"Check sensor power and signal config. DCV drives extra OA — a failed sensor can pin the damper."},
+{b:"Jade econ",c:"ACT ERROR",t:"Actuator stroke fault",d:"Blocked, disconnected, or failed actuator. Run CHECKOUT mode and watch the blades, not the display."},
+{b:"Jade econ",c:"CHECKOUT",t:"Built-in test drive",d:"Menu → CHECKOUT drives damper min/full and exercises outputs. STATUS shows live sensor values — compare against your meter."},
+{b:"Carrier/Bryant",c:"IGC LED",t:"Gas board flash codes",d:"48-series gas boards follow the common flash pattern (see Universal 1–5). Count carefully; door label has the full table."},
+{b:"Carrier/Bryant",c:"EconoMi$er X",t:"= Honeywell Jade",d:"Carrier's econ is a Jade W7220 — use the Jade entries and checkout mode."},
+{b:"Carrier/Bryant",c:"SystemVu",t:"Text alarms on display",d:"Newer 48/50 controls show plain-text alarms + history in the menu. Pull ALARM HISTORY before power cycling."},
+{b:"Trane",c:"ReliaTel test",t:"LTB test mode steps outputs",d:"Short the TEST terminals on the LTB (momentary = step, hold = advance) to force fan → econ → cool 1/2 → heat. Fastest way to isolate board vs field on Precedent/Voyager."},
+{b:"Trane",c:"SERVICE LED",t:"Status indicator",d:"Steady/off/flash meaning varies by vintage — door diagram wins. Flashing typically = active diagnostic; check stored codes via the module."},
+{b:"Lennox",c:"Prodigy 2.0",t:"Alarm codes on LCD",d:"Energence units: M3 board shows alarm numbers + text. ALARMS menu stores history with timestamps — pull it before resetting."},
+{b:"Lennox",c:"Landmark/Raider",t:"Ignition board flashes",d:"Basic units use standard ignition-module flash patterns (see Universal). Door label has the exact table."},
+{b:"York/JCI",c:"Simplicity",t:"Board flash codes",d:"Simplicity/SE boards flash coded faults — table is on the control box door. Common hits: airflow proving, limit string, flame fault."},
+{b:"Goodman",c:"Board flashes",t:"Standard ignition patterns",d:"Follows the common flash pattern closely (Universal 1–5). Door label confirms."},
+{b:"Rheem",c:"Board flashes",t:"Standard ignition patterns",d:"Common pattern applies on most gas packs; newer boards add codes for blower/ECM faults — check the door."},
+{b:"VFD",c:"OC",t:"Overcurrent",d:"Mechanical bind (turn the wheel by hand), motor short (megohm), or accel time too short."},
+{b:"VFD",c:"OV",t:"DC bus overvoltage",d:"Usually on decel — lengthen decel time. Also line spikes/regen."},
+{b:"VFD",c:"UV",t:"Undervoltage",d:"Supply sag or lost leg under load. Log line volts at the drive input."},
+{b:"VFD",c:"OH",t:"Overtemperature",d:"Drive cooling fan dead, clogged heatsink, hot cabinet. Clean and verify fan."},
+{b:"VFD",c:"OL",t:"Overload",d:"Running over programmed motor FLA. Verify drive params match THIS motor before chasing mechanics."}
+];
+
+/* ---------- MODEL / SERIAL DECODER ---------- */
+const CARRIER_SIZE={"04":3,"05":4,"06":5,"07":6,"08":7.5,"09":8.5,"12":10,"14":12.5};
+function decodeModel(brand,m){
+  const out=[]; if(!m) return out; const s=m.toUpperCase().replace(/[^A-Z0-9]/g,"");
+  if((brand==="Carrier/Bryant")&&/^(48|50)/.test(s)){
+    const two=(s.match(/^(?:48|50)[A-Z]{2,4}(\d{2})/)||[])[1];
+    if(two&&CARRIER_SIZE[two]) out.push(["Size "+two+" → "+CARRIER_SIZE[two]+" tons","Carrier 48/50 two-digit size code. Solid for 3–12.5T; bigger sizes vary — verify plate."]);
+    else if(two) out.push(["Size code "+two,"Above 12.5T the 48/50 size codes get model-specific — verify against the plate or doc."]);
+    out.push([s[0]==="4"?"48 = gas/electric":"50 = electric/electric","First two digits of Carrier/Bryant package units."]);
+  }
+  const digs=[...s.matchAll(/(\d{3})/g)].map(x=>x[1]).filter(d=>{const n=+d;return n>=18&&n<=360&&n%6===0;});
+  [...new Set(digs)].forEach(d=>{out.push([d+" → "+(+d/12)+" tons ("+(+d)+" MBH nominal)","Standard kBTU digits — the usual read for Trane/York/Lennox/Goodman. On gas models a second 3-digit group is heating input, not tonnage."]);});
+  if(!out.length) out.push(["No standard tonnage group found","Some families bury capacity in letters or 2-digit codes. Send me the full plate — photos beat published nomenclature."]);
+  return out;
+}
+function decodeSerial(brand,sn){
+  const out=[]; if(!sn) return out; const s=sn.toUpperCase().replace(/\s/g,"");
+  const d4=s.match(/^(\d{2})(\d{2})/);
+  if(brand==="Carrier/Bryant"&&d4) out.push(["Week "+d4[1]+", 20"+d4[2]+" (or 19"+d4[2]+" on old units)","Carrier: first 4 digits = WWYY. High confidence."]);
+  if(brand==="Trane"&&/^\d{2}/.test(s)) out.push(["20"+s.slice(0,2),"Trane 2010+: first two digits = year. Pre-2010 used a letter system — verify if it looks off."]);
+  if(brand==="Lennox"&&s.length>=4&&/\d{2}/.test(s.slice(2,4))) out.push(["20"+s.slice(2,4),"Lennox: characters 3–4 = year (plant code first). Matches your 2017 fleet decodes."]);
+  if(brand==="Goodman"&&d4) out.push(["20"+d4[1]+", month "+d4[2],"Goodman: first two digits year, next two month. High confidence."]);
+  if(brand==="Rheem"&&d4) out.push(["Possibly week "+d4[1]+" of 20"+d4[2],"Rheem uses W+WWYY in many eras but formats drift — verify."]);
+  if(brand==="York/JCI") out.push(["Era-dependent","York serial year coding changed several times (letter pairs vs digits). Trust the plate MFG date if printed; otherwise send the serial and I'll work it."]);
+  if(!out.length) out.push(["No confident read","Serial formats drift by plant and era. The nameplate MFG date, when printed, is ground truth."]);
+  return out;
+}
+
+/* ---------- SHARED UI ---------- */
+const num=v=>{const n=parseFloat(v);return isNaN(n)?null:n;};
+function Warn({children}){return(<div className="rd-warn"><AlertTriangle size={18} style={{flexShrink:0,marginTop:1}}/><div>{children}</div></div>);}
+function Verify({children}){return(<div className="rd-verify"><Check size={17} style={{flexShrink:0,marginTop:1}}/><div><b>Fixed when:</b> {children}</div></div>);}
+function Field({l,children}){return(<div style={{flex:1,minWidth:130}}><span className="rd-lbl">{l}</span>{children}</div>);}
+
+/* ---------- TREE ENGINE ---------- */
+function TreeView({tree,node,hist,onPick,onRestart}){
+  const nd=N[node];
+  if(!nd) return(<div className="rd-card">Missing node: {node}<button className="rd-ghost" onClick={onRestart}>Restart tree</button></div>);
+  const stamps=[...hist.map(h=>TREE_STAMP[h.tree]),TREE_STAMP[tree]].filter((s,i,a)=>i===0||s!==a[i-1]);
+  const crumb=(<div className="rd-crumb">{stamps.map((s,i)=>(<i key={i}>{s}{i<stamps.length-1?" \u25B8 ":""}</i>))}<span style={{marginLeft:"auto"}}>STEP {hist.length+1}</span></div>);
+  if(nd.q)return(
+    <div className="rd-card">
+      <div className="rd-hole"/>{crumb}
+      <div className="rd-q">{nd.q}</div>
+      {nd.h&&<div className="rd-help">{nd.h}</div>}
+      <div className="rd-opts">{nd.o.map(([label,next],i)=>(
+        <button key={i} className="rd-opt" onClick={()=>onPick(next,label)}>
+          <span>{label}</span>
+          <em>{next.startsWith("goto_")?"\u2192 "+TREE_STAMP[next.slice(5)]:"\u25B8"}</em>
+        </button>))}
+      </div>
+    </div>);
+  return(
+    <div className="rd-card fix">
+      <div className="rd-hole"/>{crumb}
+      <div className="rd-fixhead"><span className="rd-fixstamp">FIX</span><span className="rd-fixtitle">{nd.f}</span></div>
+      <ol className="rd-steps">{nd.s.map((s,i)=><li key={i}>{s}</li>)}</ol>
+      {nd.w&&<Warn>{nd.w}</Warn>}
+      {nd.v&&<Verify>{nd.v}</Verify>}
+      {nd.j&&<button className="rd-jump" onClick={()=>onPick(nd.j[1],nd.j[0])}>{nd.j[0]}</button>}
+      <AskPanel tree={tree} node={node} hist={hist}/>
+      <button className="rd-ghost" onClick={onRestart}><RotateCcw size={13} style={{verticalAlign:"-2px",marginRight:6}}/>Start this tree over</button>
+    </div>);
+}
+
+/* ---------- CODES ---------- */
+function CodesView(){
+  const[q,setQ]=useState("");const[brand,setBrand]=useState("All");
+  const list=CODES.filter(c=>(brand==="All"||c.b===brand)&&(q===""||(c.b+" "+c.c+" "+c.t+" "+c.d).toLowerCase().includes(q.toLowerCase())));
+  return(<div>
+    <div className="rd-banner">Door label wins. These are common patterns for triage — count flashes twice before trusting them.</div>
+    <PhotoDecode/>
+    <input className="rd-in" placeholder="Search codes (limit, flame, OC)" value={q} onChange={e=>setQ(e.target.value)}/>
+    <div className="rd-chips" style={{marginTop:10}}>{BRANDS.map(b=>(<button key={b} className={"rd-chip"+(brand===b?" on":"")} onClick={()=>setBrand(b)}>{b}</button>))}</div>
+    <div className="rd-card" style={{paddingTop:4}}>
+      {list.map((c,i)=>(<div className="rd-code" key={i}><code>{c.c}</code><p><b>{c.t}</b><span>{c.b} — {c.d}</span></p></div>))}
+      {!list.length&&<div className="rd-note" style={{padding:"14px 2px"}}>No match. Try one word — or send me the board photo and I will decode it.</div>}
+    </div>
+  </div>);
+}
+
+/* ---------- CALCULATORS ---------- */
+function band(v,lo,hi){if(v==null)return"";if(v<lo-4||v>hi+6)return"rd-bad";if(v<lo||v>hi)return"rd-amb";return"rd-ok";}
+function ShSc(){
+  const[ref,setRef]=useState("R-410A");
+  const[sp,setSp]=useState("");const[st,setSt]=useState("");const[lp,setLp]=useState("");const[lt,setLt]=useState("");
+  const ss=satTemp(ref,num(sp)),ls=satTemp(ref,num(lp));
+  const sh=(typeof ss==="number"&&num(st)!=null)?num(st)-ss:null;
+  const sc=(typeof ls==="number"&&num(lt)!=null)?ls-num(lt):null;
+  return(<div className="rd-card">
+    <span className="rd-lbl">Refrigerant</span>
+    <div className="rd-chips">{Object.keys(PT).map(r=>(<button key={r} className={"rd-chip"+(ref===r?" on":"")} onClick={()=>setRef(r)}>{r}</button>))}</div>
+    <div className="rd-row">
+      <Field l="Suction psig"><input className="rd-in" inputMode="decimal" value={sp} onChange={e=>setSp(e.target.value)} placeholder="128"/></Field>
+      <Field l="Suct. line F"><input className="rd-in" inputMode="decimal" value={st} onChange={e=>setSt(e.target.value)} placeholder="54"/></Field>
+    </div>
+    <div className="rd-row" style={{marginTop:8}}>
+      <Field l="Liquid psig"><input className="rd-in" inputMode="decimal" value={lp} onChange={e=>setLp(e.target.value)} placeholder="340"/></Field>
+      <Field l="Liq. line F"><input className="rd-in" inputMode="decimal" value={lt} onChange={e=>setLt(e.target.value)} placeholder="95"/></Field>
+    </div>
+    <div className="rd-out">
+      <div>Suction sat: <b className="rd-amb">{ss==="off"?"off chart":ss==null?"—":r1(ss)+"°F"}</b>{"   "}Liquid sat: <b className="rd-amb">{ls==="off"?"off chart":ls==null?"—":r1(ls)+"°F"}</b></div>
+      <div style={{marginTop:6}}>SH: <span className={"rd-big "+band(sh,8,14)}>{sh==null?"—":r1(sh)+"°"}</span>{"   "}SC: <span className={"rd-big "+band(sc,8,12)}>{sc==null?"—":r1(sc)+"°"}</span></div>
+      <div className="rd-note">TXV targets: SH 8–14 at the evap, SC 8–12 — plate spec wins. {PT_NOTE[ref]}</div>
+    </div>
+  </div>);
+}
+function Imb(){
+  const[a,setA]=useState("");const[b,setB]=useState("");const[c,setC]=useState("");
+  const v=[num(a),num(b),num(c)];const ok=v.every(x=>x!=null&&x>0);
+  let pct=null,avg=null;if(ok){avg=(v[0]+v[1]+v[2])/3;pct=Math.max(...v.map(x=>Math.abs(x-avg)))/avg*100;}
+  return(<div className="rd-card">
+    <div className="rd-row">
+      <Field l="L1-L2"><input className="rd-in" inputMode="decimal" value={a} onChange={e=>setA(e.target.value)} placeholder="208"/></Field>
+      <Field l="L2-L3"><input className="rd-in" inputMode="decimal" value={b} onChange={e=>setB(e.target.value)} placeholder="206"/></Field>
+      <Field l="L1-L3"><input className="rd-in" inputMode="decimal" value={c} onChange={e=>setC(e.target.value)} placeholder="210"/></Field>
+    </div>
+    <div className="rd-out">
+      <div>Average: <b>{avg?r1(avg):"—"}</b></div>
+      <div style={{marginTop:4}}>Imbalance: <span className={"rd-big "+(pct==null?"":pct>2?"rd-bad":pct>1?"rd-amb":"rd-ok")}>{pct==null?"—":r1(pct)+"%"}</span></div>
+      <div className="rd-note">Over 2% = fix the supply before condemning a motor or compressor. Same math for amps — current imbalance up to ~10% is tolerable.</div>
+    </div>
+  </div>);
+}
+function Cap(){
+  const[a,setA]=useState("");const[v,setV]=useState("");const[r,setR]=useState("");
+  const uf=(num(a)&&num(v))?2652*num(a)/num(v):null;
+  const diff=(uf!=null&&num(r))?(uf-num(r))/num(r)*100:null;
+  return(<div className="rd-card">
+    <div className="rd-note" style={{marginTop:0,marginBottom:8}}>Under load: clamp the start-winding wire through the cap, measure volts across the cap.</div>
+    <div className="rd-row">
+      <Field l="Amps"><input className="rd-in" inputMode="decimal" value={a} onChange={e=>setA(e.target.value)} placeholder="3.1"/></Field>
+      <Field l="Volts"><input className="rd-in" inputMode="decimal" value={v} onChange={e=>setV(e.target.value)} placeholder="235"/></Field>
+      <Field l="Rated uF"><input className="rd-in" inputMode="decimal" value={r} onChange={e=>setR(e.target.value)} placeholder="35"/></Field>
+    </div>
+    <div className="rd-out">
+      <div>Measured: <span className="rd-big">{uf==null?"—":r1(uf)+" µF"}</span></div>
+      <div style={{marginTop:4}}>vs rated: <b className={diff==null?"":Math.abs(diff)>6?"rd-bad":"rd-ok"}>{diff==null?"—":(diff>0?"+":"")+r1(diff)+"%"}</b> <span className="rd-note">(±6% is the line)</span></div>
+      <div className="rd-note">µF = 2652 × A ÷ V (60 Hz). Discharge before touching.</div>
+    </div>
+  </div>);
+}
+function Cfm(){
+  const[mode,setMode]=useState("gas");
+  const[btu,setBtu]=useState("");const[eff,setEff]=useState("80");
+  const[vv,setVv]=useState("");const[aa,setAa]=useState("");
+  const[dt,setDt]=useState("");const[tons,setTons]=useState("");
+  let cfm=null;
+  if(mode==="gas"&&num(btu)&&num(dt)&&num(eff))cfm=num(btu)*num(eff)/100/(1.08*num(dt));
+  if(mode==="elec"&&num(vv)&&num(aa)&&num(dt))cfm=num(vv)*num(aa)*3.413/(1.08*num(dt));
+  const cpt=(cfm&&num(tons))?cfm/num(tons):null;
+  return(<div className="rd-card">
+    <div className="rd-chips">{[["gas","Gas heat method"],["elec","Electric heat method"]].map(([k,l])=>(<button key={k} className={"rd-chip"+(mode===k?" on":"")} onClick={()=>setMode(k)}>{l}</button>))}</div>
+    {mode==="gas"?(<div className="rd-row">
+      <Field l="Input BTU/h"><input className="rd-in" inputMode="decimal" value={btu} onChange={e=>setBtu(e.target.value)} placeholder="150000"/></Field>
+      <Field l="Efficiency %"><input className="rd-in" inputMode="decimal" value={eff} onChange={e=>setEff(e.target.value)}/></Field>
+    </div>):(<div className="rd-row">
+      <Field l="Heater volts"><input className="rd-in" inputMode="decimal" value={vv} onChange={e=>setVv(e.target.value)} placeholder="208"/></Field>
+      <Field l="Total amps"><input className="rd-in" inputMode="decimal" value={aa} onChange={e=>setAa(e.target.value)} placeholder="42"/></Field>
+    </div>)}
+    <div className="rd-row" style={{marginTop:8}}>
+      <Field l="Temp rise F"><input className="rd-in" inputMode="decimal" value={dt} onChange={e=>setDt(e.target.value)} placeholder="42"/></Field>
+      <Field l="Tons (opt.)"><input className="rd-in" inputMode="decimal" value={tons} onChange={e=>setTons(e.target.value)} placeholder="7.5"/></Field>
+    </div>
+    <div className="rd-out">
+      <div>Airflow: <span className="rd-big">{cfm==null?"—":Math.round(cfm)+" CFM"}</span></div>
+      {cpt!=null&&<div style={{marginTop:4}}>Per ton: <b className={cpt<330||cpt>430?"rd-bad":cpt<350||cpt>400?"rd-amb":"rd-ok"}>{Math.round(cpt)} CFM/ton</b> <span className="rd-note">(target 350–400)</span></div>}
+      <div className="rd-note">CFM = heat output / (1.08 × rise). Run steady-state, probes out of line-of-sight of the exchanger.</div>
+    </div>
+  </div>);
+}
+function Rise(){
+  const[ra,setRa]=useState("");const[sa,setSa]=useState("");const[lo,setLo]=useState("");const[hi,setHi]=useState("");
+  const rise=(num(ra)!=null&&num(sa)!=null)?num(sa)-num(ra):null;
+  const inr=(rise!=null&&num(lo)!=null&&num(hi)!=null)?(rise>=num(lo)&&rise<=num(hi)):null;
+  return(<div className="rd-card">
+    <div className="rd-row">
+      <Field l="Return F"><input className="rd-in" inputMode="decimal" value={ra} onChange={e=>setRa(e.target.value)} placeholder="68"/></Field>
+      <Field l="Supply F"><input className="rd-in" inputMode="decimal" value={sa} onChange={e=>setSa(e.target.value)} placeholder="112"/></Field>
+    </div>
+    <div className="rd-row" style={{marginTop:8}}>
+      <Field l="Plate min"><input className="rd-in" inputMode="decimal" value={lo} onChange={e=>setLo(e.target.value)} placeholder="25"/></Field>
+      <Field l="Plate max"><input className="rd-in" inputMode="decimal" value={hi} onChange={e=>setHi(e.target.value)} placeholder="55"/></Field>
+    </div>
+    <div className="rd-out">
+      <div>Rise: <span className={"rd-big "+(inr==null?"":inr?"rd-ok":"rd-bad")}>{rise==null?"—":r1(rise)+"°F"}</span> {inr!=null&&<b className={inr?"rd-ok":"rd-bad"}>{inr?"in range":"OUT of range"}</b>}</div>
+      <div className="rd-note">High rise = airflow or overfire. Low rise = underfire or probe seeing radiant. Aim mid-range of the plate.</div>
+    </div>
+  </div>);
+}
+function Tsh(){
+  const[wb,setWb]=useState("");const[od,setOd]=useState("");
+  let t=null;if(num(wb)&&num(od))t=(3*num(wb)-80-num(od))/2;
+  const clamped=t!=null&&t<5;
+  return(<div className="rd-card">
+    <div className="rd-row">
+      <Field l="Return WB F"><input className="rd-in" inputMode="decimal" value={wb} onChange={e=>setWb(e.target.value)} placeholder="63"/></Field>
+      <Field l="Outdoor DB F"><input className="rd-in" inputMode="decimal" value={od} onChange={e=>setOd(e.target.value)} placeholder="88"/></Field>
+    </div>
+    <div className="rd-out">
+      <div>Target SH: <span className="rd-big rd-amb">{t==null?"—":(clamped?"5 (min)":r1(t)+"°")}</span></div>
+      <div className="rd-note">Fixed-orifice charging only — TXV units charge to subcool. (3×WB − 80 − ODT) / 2. Result under 5° means conditions are too mild to charge by SH: weigh it or come back on load.</div>
+    </div>
+  </div>);
+}
+function Belt(){
+  const[mr,setMr]=useState("1725");const[mp,setMp]=useState("");const[bp,setBp]=useState("");
+  const rpm=(num(mr)&&num(mp)&&num(bp))?num(mr)*num(mp)/num(bp):null;
+  return(<div className="rd-card">
+    <div className="rd-row">
+      <Field l="Motor RPM"><input className="rd-in" inputMode="decimal" value={mr} onChange={e=>setMr(e.target.value)}/></Field>
+      <Field l="Motor PD in"><input className="rd-in" inputMode="decimal" value={mp} onChange={e=>setMp(e.target.value)} placeholder="3.7"/></Field>
+      <Field l="Blower PD in"><input className="rd-in" inputMode="decimal" value={bp} onChange={e=>setBp(e.target.value)} placeholder="6.2"/></Field>
+    </div>
+    <div className="rd-out">
+      <div>Blower speed: <span className="rd-big">{rpm==null?"—":Math.round(rpm)+" RPM"}</span></div>
+      <div className="rd-note">Tension: about 1/64 inch deflection per inch of span. Adjustable sheave: log turns-open whenever you change it.</div>
+    </div>
+  </div>);
+}
+const CALCS=[["shsc","SH / SC",ShSc],["imb","Imbalance",Imb],["cap","Capacitor",Cap],["cfm","Airflow CFM",Cfm],["rise","Temp rise",Rise],["tsh","Target SH",Tsh],["belt","Belt RPM",Belt]];
+function CalcView(){
+  const[tab,setTab]=useState("shsc");
+  const C=CALCS.find(c=>c[0]===tab)[2];
+  return(<div>
+    <div className="rd-chips">{CALCS.map(([k,l])=>(<button key={k} className={"rd-chip"+(tab===k?" on":"")} onClick={()=>setTab(k)}>{l}</button>))}</div>
+    <C/>
+  </div>);
+}
+
+/* ---------- DECODER VIEW ---------- */
+function DecoderView(){
+  const[brand,setBrand]=useState("Generic");
+  const[model,setModel]=useState("");const[serial,setSerial]=useState("");
+  const mb=["Generic","Carrier/Bryant","Trane","Lennox","York/JCI","Goodman","Rheem"];
+  const mres=decodeModel(brand,model),sres=decodeSerial(brand,serial);
+  const Res=({items})=>(<div className="rd-card" style={{marginTop:8}}>{items.map(([h,d],i)=>(
+    <div key={i} style={{marginBottom:i<items.length-1?10:0}}>
+      <b className="rd-amb" style={{fontFamily:"var(--mono)",fontSize:14}}>{h}</b>
+      <div className="rd-note" style={{marginTop:2}}>{d}</div>
+    </div>))}</div>);
+  return(<div>
+    <div className="rd-banner">Plate photos are ground truth — published nomenclature drifts. Fast reads below; verify anything load-bearing.</div>
+    <span className="rd-lbl">Brand</span>
+    <div className="rd-chips">{mb.map(b=>(<button key={b} className={"rd-chip"+(brand===b?" on":"")} onClick={()=>setBrand(b)}>{b}</button>))}</div>
+    <span className="rd-lbl">Model number</span>
+    <input className="rd-in" value={model} onChange={e=>setModel(e.target.value)} placeholder="LGH060H4B / 48TCED08 / YSC090"/>
+    {model&&<Res items={mres}/>}
+    <span className="rd-lbl">Serial number</span>
+    <input className="rd-in" value={serial} onChange={e=>setSerial(e.target.value)} placeholder="5617D12345"/>
+    {serial&&<Res items={sres}/>}
+  </div>);
+}
+
+/* ---------- READINGS LOG ---------- */
+const LOGKEY="rtudeck:log:v1";
+const LOGF=[["suction","Suction psig"],["liquid","Liquid psig"],["sh","SH F"],["sc","SC F"],["split","Split dT F"],["amps","Amps"],["stat","Static WC"],["gas","Manifold WC"],["rise","Rise F"],["filters","Filters"],["belt","Belt"]];
+function fmtEntry(e){
+  const d=new Date(e.ts);
+  const dt=(d.getMonth()+1)+"/"+d.getDate()+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");
+  const lines=["UNIT: "+(e.unit||"(no label)")+"  ["+e.mode+"]  "+dt];
+  LOGF.forEach(([k,l])=>{if(e.f[k])lines.push(l+": "+e.f[k]);});
+  if(e.f.notes)lines.push("Notes: "+e.f.notes);
+  return lines.join("\n");
+}
+function LogView(){
+  const[entries,setEntries]=useState([]);
+  const[persist,setPersist]=useState(true);
+  const[loaded,setLoaded]=useState(false);
+  const[unit,setUnit]=useState("");const[mode,setMode]=useState("Cool C1");
+  const[f,setF]=useState({});
+  const[showText,setShowText]=useState(null);
+  const[copied,setCopied]=useState(0);
+  useEffect(()=>{(async()=>{
+    try{const r=await APPSTORE.get(LOGKEY);setEntries(r&&r.value?JSON.parse(r.value):[]);}
+    catch(err){try{await APPSTORE.set(LOGKEY,"[]");}catch(e2){setPersist(false);}}
+    setLoaded(true);})();},[]);
+  const save=async(list)=>{setEntries(list);if(!persist)return;try{await APPSTORE.set(LOGKEY,JSON.stringify(list));}catch(e){setPersist(false);}};
+  const setf=(k,v)=>setF(p=>({...p,[k]:v}));
+  const add=()=>{const clean={};Object.keys(f).forEach(k=>{if(f[k]&&String(f[k]).trim())clean[k]=String(f[k]).trim();});
+    if(!unit.trim()&&!Object.keys(clean).length)return;
+    save([{ts:Date.now(),unit:unit.trim(),mode,f:clean},...entries]);setF({});};
+  const del=ts=>save(entries.filter(e=>e.ts!==ts));
+  const doCopy=async(txt,id)=>{try{await navigator.clipboard.writeText(txt);setCopied(id);setShowText(null);setTimeout(()=>setCopied(0),1400);}catch(e){setShowText(txt);}};
+  return(<div>
+    {loaded&&!persist&&<div className="rd-banner" style={{borderLeftColor:"var(--trip)"}}>Storage unavailable here — entries live for this session only. Copy out anything you need.</div>}
+    <div className="rd-card">
+      <div className="rd-row">
+        <Field l="Unit label"><input className="rd-in" value={unit} onChange={e=>setUnit(e.target.value)} placeholder="RTU-3 north"/></Field>
+        <Field l="Mode"><select className="rd-sel" style={{width:"100%"}} value={mode} onChange={e=>setMode(e.target.value)}>{["Cool C1","Cool C2","Heat","PM check","Note"].map(m=><option key={m}>{m}</option>)}</select></Field>
+      </div>
+      <div className="rd-row" style={{marginTop:8}}>
+        {LOGF.map(([k,l])=>(<Field key={k} l={l}><input className="rd-in" value={f[k]||""} onChange={e=>setf(k,e.target.value)}/></Field>))}
+      </div>
+      <span className="rd-lbl">Notes</span>
+      <input className="rd-in" value={f.notes||""} onChange={e=>setf("notes",e.target.value)} placeholder="leak at C1 schrader, drier changed"/>
+      <button className="rd-jump" onClick={add}><Plus size={15} style={{verticalAlign:"-2px",marginRight:6}}/>Add entry</button>
+    </div>
+    {entries.length>0&&<button className="rd-ghost" style={{borderStyle:"solid",color:"var(--ink)"}} onClick={()=>doCopy(entries.map(fmtEntry).join("\n\n"),-1)}><Copy size={13} style={{verticalAlign:"-2px",marginRight:6}}/>{copied===-1?"Copied all":"Copy ALL for PM sheet"}</button>}
+    {showText!=null&&<div className="rd-card"><div className="rd-note" style={{marginTop:0}}>Clipboard blocked — long-press to select and copy:</div><div className="rd-pre">{showText}</div></div>}
+    {entries.map(e=>(<div className="rd-logent" key={e.ts}>
+      <h4><span>{e.unit||"(no label)"} <span className="rd-amb" style={{fontFamily:"var(--mono)",fontSize:12}}>{e.mode}</span></span>
+      <time>{new Date(e.ts).toLocaleDateString([],{month:"numeric",day:"numeric"})} {new Date(e.ts).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</time></h4>
+      <div className="rd-pre" style={{marginTop:8}}>{fmtEntry(e).split("\n").slice(1).join("\n")||"—"}</div>
+      <div className="rd-row" style={{marginTop:8}}>
+        <button className="rd-iconbtn" style={{flex:1}} onClick={()=>doCopy(fmtEntry(e),e.ts)}>{copied===e.ts?<Check size={17}/>:<Copy size={17}/>}</button>
+        <button className="rd-iconbtn" onClick={()=>del(e.ts)}><Trash2 size={17}/></button>
+      </div>
+    </div>))}
+    {loaded&&!entries.length&&<div className="rd-note" style={{textAlign:"center",padding:"18px 0"}}>No entries yet. Log readings per unit, then copy the block straight into your PM sheet.</div>}
+  </div>);
+}
+
+/* ---------- REFERENCE ---------- */
+const TARGETS=[
+["TXV superheat (evap)","8–14 °F"],["Subcool","8–12 °F (plate wins)"],["Cooling split","16–22 °F, mod. humidity"],
+["Airflow","350–400 CFM/ton"],["Voltage","±10% of plate"],["Voltage imbalance","≤2% — fix supply first"],
+["Current imbalance","≤10%"],["Run capacitor","±6% of rating"],["Megohm to ground","<1 MΩ = condemn"],
+["Flame current","1–6 µA, dropout ~0.5–1"],["Manifold NG","3.2–3.8\" WC — set to plate"],["Manifold LP","~10\" WC — set to plate"],
+["Inlet NG minimum","~4.5–5\" WC under full load"],["Belt tension","1/64\" sag per inch of span"],["Condensate trap","depth ≥ neg. static + 1\""]];
+function RefView(){
+  const[ref,setRef]=useState("R-410A");
+  const t=PT[ref];const half=Math.ceil(t.length/2);
+  return(<div>
+    <div className="rd-card">
+      <span className="rd-lbl">PT chart</span>
+      <div className="rd-chips">{Object.keys(PT).map(r=>(<button key={r} className={"rd-chip"+(ref===r?" on":"")} onClick={()=>setRef(r)}>{r}</button>))}</div>
+      <table className="rd-tbl"><thead><tr><th>Sat °F</th><th>psig</th><th>Sat °F</th><th>psig</th></tr></thead><tbody>
+        {t.slice(0,half).map((row,i)=>{const b=t[i+half];return(<tr key={i}><td>{row[0]}</td><td>{row[1]}</td><td>{b?b[0]:""}</td><td>{b?b[1]:""}</td></tr>);})}
+      </tbody></table>
+      <div className="rd-note">{PT_NOTE[ref]}</div>
+    </div>
+    <div className="rd-card">
+      <span className="rd-lbl">Field targets</span>
+      <table className="rd-tbl"><tbody>
+        {TARGETS.map(([k,v],i)=>(<tr key={i}><td style={{fontFamily:"system-ui",fontWeight:600}}>{k}</td><td className="rd-amb">{v}</td></tr>))}
+      </tbody></table>
+      <div className="rd-note">Nameplate and door-label specs always beat rules of thumb.</div>
+    </div>
+  </div>);
+}
+
+/* ---------- HOME + DIAGNOSE ---------- */
+const HOME=[["diagnose","DX","Diagnose","13 fault trees, cross-linked"],["plate","PR","PM filler","Plate photos → data + fills"],["sites","JS","Job sites","Fleet book: units, belts, quirks"],["codes","FC","Fault codes","Search, or decode a photo"],["calc","CA","Calculators","SH/SC, imbalance, cap, CFM"],["log","LG","Readings log","Saves between visits"],["decoder","MD","Decoder","Model tons, serial year"],["wiring","WD","Wiring reader","Snap the diagram, trace circuits"],["ref","RF","Reference","PT charts, targets, specs"],["settings","ST","Settings","API key for AI features"]];
+function HomeView({go}){
+  return(<div>
+    <div className="rd-grid">
+      {HOME.map(([k,tag,label,blurb])=>(
+        <button key={k} className="rd-tile" onClick={()=>go(k)}>
+          <span className="rd-tag">{tag}</span><b>{label}</b><span>{blurb}</span>
+        </button>))}
+    </div>
+    <div className="rd-note" style={{textAlign:"center",marginTop:16}}>RTU DECK v2 — packaged rooftop field toolkit</div>
+  </div>);
+}
+function DiagnoseView({open}){
+  return(<div className="rd-grid">
+    {TREES.map(([k,tag,label,blurb])=>(
+      <button key={k} className="rd-tile" onClick={()=>open(k)}>
+        <span className="rd-tag">{tag}</span><b>{label}</b><span>{blurb}</span>
+      </button>))}
+  </div>);
+}
+
+/* ---------- APP ---------- */
+function RTUDeck(){
+  const[view,setView]=useState("home");
+  const[tree,setTree]=useState(null);const[node,setNode]=useState(null);const[hist,setHist]=useState([]);
+  useEffect(()=>{window.scrollTo(0,0);},[view,node]);
+  const openTree=k=>{setTree(k);setNode(ROOT[k]);setHist([]);setView("tree");};
+  const restart=()=>{setNode(ROOT[tree]);setHist([]);};
+  const pick=(next,label)=>{const cur={tree,node,choice:label};
+    if(next.startsWith("goto_")){const k=next.slice(5);setHist(h=>[...h,cur]);setTree(k);setNode(ROOT[k]);}
+    else{setHist(h=>[...h,cur]);setNode(next);}};
+  const back=()=>{
+    if(view==="tree"){
+      if(hist.length){const last=hist[hist.length-1];setTree(last.tree);setNode(last.node);setHist(hist.slice(0,-1));}
+      else setView("diagnose");
+      return;}
+    setView("home");};
+  const NAV=[["home",Home,"Home"],["diagnose",Search,"Trees"],["codes",BookOpen,"Codes"],["calc",Calculator,"Calc"],["log",ClipboardList,"Log"]];
+  const titles={home:null,diagnose:"Fault trees",tree:tree?TREE_LABEL[tree]:"",codes:"Fault codes",calc:"Calculators",log:"Readings log",decoder:"Decoder",ref:"Reference",plate:"PM filler",sites:"Job sites",wiring:"Wiring reader",settings:"Settings"};
+  return(<div className="rd"><style>{CSS}</style>
+    <div className="rd-top">
+      {view!=="home"&&<button className="rd-back" onClick={back} aria-label="Back"><ChevronLeft size={22}/></button>}
+      <div style={{flex:1}}>
+        <div className="rd-brand">RTU<b>DECK</b></div>
+        <div className="rd-sub">{titles[view]||"field toolkit — v2"}</div>
+      </div>
+      {view==="tree"&&<button className="rd-back" onClick={restart} aria-label="Restart tree"><RotateCcw size={18}/></button>}
+    </div>
+    <div className="rd-wrap">
+      {view==="home"&&<HomeView go={setView}/>}
+      {view==="diagnose"&&<DiagnoseView open={openTree}/>}
+      {view==="tree"&&<TreeView tree={tree} node={node} hist={hist} onPick={pick} onRestart={restart}/>}
+      {view==="codes"&&<CodesView/>}
+      {view==="calc"&&<CalcView/>}
+      {view==="log"&&<LogView/>}
+      {view==="decoder"&&<DecoderView/>}
+      {view==="ref"&&<RefView/>}
+      {view==="plate"&&<PlateView/>}
+      {view==="sites"&&<SitesView/>}
+      {view==="settings"&&<SettingsView/>}
+      {view==="wiring"&&<WiringView/>}
+    </div>
+    <div className="rd-nav">{NAV.map(([k,I,l])=>(
+      <button key={k} className={(view===k||(k==="diagnose"&&view==="tree"))?"on":""} onClick={()=>setView(k)}>
+        <I size={20}/><span>{l}</span>
+      </button>))}
+    </div>
+  </div>);
+}
+
+/* ---------- PM FILLER / PLATE READER ---------- */
+function readDataURL(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=()=>rej(new Error("read failed"));r.readAsDataURL(file);});}
+function fileToB64(file){return readDataURL(file).then(u=>u.split(",")[1]);}
+// Downscale + re-encode to JPEG in-browser. Caps the longest edge and file size
+// so the vision API never rejects a giant HEIC/8000px phone photo. Returns {type,b64}.
+async function fileToImagePart(file,maxEdge=2000,quality=0.82){
+  try{
+    const url=await readDataURL(file);
+    const img=await new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=()=>rej(new Error("decode failed"));i.src=url;});
+    let{width:w,height:h}=img;
+    if(!w||!h)throw new Error("no dims");
+    const scale=Math.min(1,maxEdge/Math.max(w,h));
+    w=Math.round(w*scale);h=Math.round(h*scale);
+    const cv=document.createElement("canvas");cv.width=w;cv.height=h;
+    const ctx=cv.getContext("2d");ctx.fillStyle="#fff";ctx.fillRect(0,0,w,h);ctx.drawImage(img,0,0,w,h);
+    let qy=quality,dataUrl=cv.toDataURL("image/jpeg",qy);
+    // hard-cap ~3.5MB of base64 by stepping quality down
+    while(dataUrl.length>4700000&&qy>0.4){qy-=0.12;dataUrl=cv.toDataURL("image/jpeg",qy);}
+    return{type:"image/jpeg",b64:dataUrl.split(",")[1]};
+  }catch(e){
+    // fallback: send original bytes (small pngs, or canvas-tainted cases)
+    const b64=await fileToB64(file);
+    return{type:file.type||"image/jpeg",b64};
+  }
+}
+const PLATE_FIELDS=[["brand","Brand"],["model","Model"],["serial","Serial"],["tons","Tons"],["refrigerant","Refrigerant"],["charge","Factory charge"],["voltage","Volts/Ph/Hz"],["rla","Compressor RLA"],["fan_fla","Fan FLA"],["mca","MCA"],["mop","MOP / max fuse"],["heat_input","Heat input"],["mfg_date","Mfg date"]];
+function PlateView(){
+  const[imgs,setImgs]=useState([]);
+  const[pdf,setPdf]=useState(null);
+  const[busy,setBusy]=useState(false);
+  const[err,setErr]=useState(null);
+  const[plate,setPlate]=useState(null);
+  const[fills,setFills]=useState([]);
+  const[copied,setCopied]=useState(false);
+  const[showText,setShowText]=useState(null);
+  const[saved,setSaved]=useState(false);
+  const[siteName,setSiteName]=useState("");
+  const[fleetSaved,setFleetSaved]=useState(false);
+  const addImgs=async e=>{const fl=[...e.target.files];const out=[];for(const f of fl){out.push({name:f.name,...(await fileToImagePart(f))});}setImgs(p=>[...p,...out]);e.target.value="";};
+  const addPdf=async e=>{const f=e.target.files[0];if(f)setPdf({name:f.name,b64:await fileToB64(f)});e.target.value="";};
+  const run=async()=>{
+    if(!imgs.length){setErr("Add at least one plate photo first.");return;}
+    setBusy(true);setErr(null);setPlate(null);setFills([]);setSaved(false);setFleetSaved(false);
+    try{
+      const content=[];
+      imgs.forEach(im=>content.push({type:"image",source:{type:"base64",media_type:im.type,data:im.b64}}));
+      if(pdf)content.push({type:"document",source:{type:"base64",media_type:"application/pdf",data:pdf.b64}});
+      content.push({type:"text",text:"HVAC unit nameplate photo(s)"+(pdf?" plus a PM checklist PDF":"")+". Extract the nameplate data. Respond with ONLY raw JSON, no markdown fences, shaped exactly: {\"plate\":{\"brand\":\"\",\"model\":\"\",\"serial\":\"\",\"tons\":\"\",\"refrigerant\":\"\",\"charge\":\"\",\"voltage\":\"\",\"rla\":\"\",\"fan_fla\":\"\",\"mca\":\"\",\"mop\":\"\",\"heat_input\":\"\",\"mfg_date\":\"\"},\"fills\":[{\"field\":\"\",\"value\":\"\"}]} Rules: all values strings; dual circuit values as \"C1: x / C2: y\"; unreadable or absent = null; tons may be derived from the model number if it uses standard kBTU digits (note derived); mfg_date from the plate, or decoded from the serial (say decoded). fills: ONLY if a checklist PDF was provided — one item per checklist field the plate data can complete, using the checklist's own field label; leave measured readings (pressures, amps found, temps) alone. Empty array if no PDF. Never invent values."});
+      const data=await apiCall(content);
+      const txt=data.content.map(i=>i.type==="text"?i.text:"").join("").replace(/```json|```/g,"").trim();
+      let j;try{j=JSON.parse(txt);}catch(pe){throw new Error("Model did not return clean data. Reply began: "+txt.slice(0,120));}
+      setPlate(j.plate||{});setFills(Array.isArray(j.fills)?j.fills:[]);
+    }catch(e){setErr((e&&e.message?e.message:"Read failed")+" — try closer, straight-on shots, one plate per photo.");}
+    setBusy(false);
+  };
+  const blockText=()=>{
+    const lines=PLATE_FIELDS.filter(([k])=>plate&&plate[k]).map(([k,l])=>l+": "+plate[k]);
+    if(fills.length){lines.push("","CHECKLIST FILLS:");fills.forEach(x=>lines.push(x.field+": "+x.value));}
+    return lines.join("\n");
+  };
+  const doCopy=async()=>{try{await navigator.clipboard.writeText(blockText());setCopied(true);setShowText(null);setTimeout(()=>setCopied(false),1400);}catch(e){setShowText(blockText());}};
+  const toLog=async()=>{
+    const entry={ts:Date.now(),unit:((plate.brand||"")+" "+(plate.model||"")).trim()||"Plate",mode:"PM check",f:{notes:blockText()}};
+    try{let list=[];try{const r=await APPSTORE.get(LOGKEY);list=r&&r.value?JSON.parse(r.value):[];}catch(e){}
+      await APPSTORE.set(LOGKEY,JSON.stringify([entry,...list]));setSaved(true);}
+    catch(e){setErr("Storage unavailable here — use Copy block instead.");}
+  };
+  const toFleet=async()=>{
+    const nm=siteName.trim();if(!nm){setErr("Type a site name to file this unit under.");return;}
+    const u={id:Date.now(),label:(plate.model||plate.brand||"Unit").trim(),brand:plate.brand||"",model:plate.model||"",serial:plate.serial||"",tons:plate.tons||"",refrigerant:plate.refrigerant||"",belt:"",filters:"",quirks:"",plateText:blockText()};
+    try{let list=[];try{const r=await APPSTORE.get(SITEKEY);list=r&&r.value?JSON.parse(r.value):[];}catch(e){}
+      const i=list.findIndex(s=>s.name.toLowerCase()===nm.toLowerCase());
+      if(i>=0)list[i]={...list[i],units:[...list[i].units,u]};
+      else list.unshift({id:Date.now()+1,name:nm,units:[u]});
+      await APPSTORE.set(SITEKEY,JSON.stringify(list));setFleetSaved(true);setErr(null);}
+    catch(e){setErr("Storage unavailable — copy the block instead.");}
+  };
+  return(<div>
+    <div className="rd-banner">Plate photos in → data block + checklist fills out. For the finished PDF itself, send the blank checklist + these photos to Claude in chat — the overlay fill that prints right in every viewer happens there.</div>
+    <div className="rd-card">
+      <label className="rd-jump" style={{display:"flex",alignItems:"center",justifyContent:"center",marginTop:0,cursor:"pointer"}}>
+        <Plus size={15} style={{marginRight:6}}/>{imgs.length?"Add another plate photo":"Add plate photo(s)"}
+        <input type="file" accept="image/*" multiple hidden onChange={addImgs}/>
+      </label>
+      {imgs.length>0&&<div className="rd-note">{imgs.length} photo{imgs.length>1?"s":""}: {imgs.map(i=>i.name).join(", ")} <button className="rd-chip" style={{marginLeft:6}} onClick={()=>setImgs([])}>clear</button></div>}
+      <label className="rd-ghost" style={{display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer"}}>
+        {pdf?("PDF: "+pdf.name):"Attach PM checklist PDF (optional)"}
+        <input type="file" accept="application/pdf" hidden onChange={addPdf}/>
+      </label>
+      <button className="rd-jump" disabled={busy} style={{opacity:busy?0.6:1}} onClick={run}>{busy?"Reading plate…":"Read plate"+(pdf?" + match checklist":"")}</button>
+      {err&&<Warn>{err}</Warn>}
+    </div>
+    {plate&&<div className="rd-card fix">
+      <div className="rd-hole"/>
+      <div className="rd-fixhead"><span className="rd-fixstamp">PLATE</span><span className="rd-fixtitle">Extracted — edit anything it misread</span></div>
+      <div className="rd-row">
+        {PLATE_FIELDS.map(([k,l])=>(<Field key={k} l={l}><input className="rd-in" value={plate[k]||""} onChange={e=>setPlate(p=>({...p,[k]:e.target.value}))}/></Field>))}
+      </div>
+      {fills.length>0&&<div style={{marginTop:12}}>
+        <span className="rd-lbl">Checklist fills ({fills.length})</span>
+        {fills.map((x,i)=>(<div className="rd-code" key={i}><code style={{minWidth:0,maxWidth:140}}>{x.field}</code><p><b>{x.value}</b></p></div>))}
+      </div>}
+      <button className="rd-jump" onClick={doCopy}><Copy size={14} style={{verticalAlign:"-2px",marginRight:6}}/>{copied?"Copied":"Copy block"}</button>
+      <button className="rd-ghost" style={{borderStyle:"solid",color:"var(--ink)"}} onClick={toLog}>{saved?"Saved to log \u2713":"Save to readings log"}</button>
+      <div className="rd-row" style={{marginTop:8}}>
+        <Field l="Job site"><input className="rd-in" value={siteName} onChange={e=>setSiteName(e.target.value)} placeholder="Greensburg store"/></Field>
+      </div>
+      <button className="rd-ghost" style={{borderStyle:"solid",color:"var(--ink)"}} onClick={toFleet}>{fleetSaved?"Filed under "+siteName+" \u2713":"Save unit to job site"}</button>
+      {showText!=null&&<div><div className="rd-note">Clipboard blocked — long-press to select:</div><div className="rd-pre">{showText}</div></div>}
+    </div>}
+  </div>);
+}
+
+/* ---------- SHARED API HELPER ---------- */
+async function apiCall(content){
+  let resp;
+  try{
+    const _key=getKey();
+    if(!_key)throw new Error("Add your API key first: Home -> Settings.");
+    resp=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":_key,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},body:JSON.stringify({model:"claude-sonnet-5",max_tokens:1000,messages:[{role:"user",content}]})});
+  }catch(e){throw new Error("Network error — no connection to the API.");}
+  let raw="";try{raw=await resp.text();}catch(e){}
+  let data=null;try{data=JSON.parse(raw);}catch(e){}
+  if(!resp.ok){
+    const m=data&&data.error&&data.error.message?data.error.message:(raw?raw.slice(0,160):("HTTP "+resp.status));
+    throw new Error("API "+resp.status+": "+m);
+  }
+  if(!data)throw new Error("Non-JSON reply: "+raw.slice(0,140));
+  if(data.type==="error"||data.error)throw new Error("API error: "+((data.error&&data.error.message)||JSON.stringify(data).slice(0,140)));
+  if(!Array.isArray(data.content))throw new Error("No content field. Got: "+JSON.stringify(data).slice(0,140));
+  return data;
+}
+async function claudeText(content){
+  const data=await apiCall(content);
+  const txt=data.content.map(i=>i.type==="text"?i.text:"").join("").trim();
+  if(!txt)throw new Error("Empty reply (stop: "+(data.stop_reason||"?")+"). Try again or reshoot.");
+  return txt;
+}
+
+/* ---------- JOB SITES / FLEET BOOK ---------- */
+const SITEKEY="rtudeck:sites:v1";
+const UNIT_FIELDS=[["label","Unit label"],["brand","Brand"],["model","Model"],["serial","Serial"],["tons","Tons"],["refrigerant","Refrig."],["belt","Belt"],["filters","Filters"]];
+function SitesView(){
+  const[sites,setSites]=useState([]);
+  const[persist,setPersist]=useState(true);
+  const[loaded,setLoaded]=useState(false);
+  const[siteId,setSiteId]=useState(null);
+  const[unitId,setUnitId]=useState(null);
+  const[newName,setNewName]=useState("");
+  const[copiedS,setCopiedS]=useState(false);
+  const[showText,setShowText]=useState(null);
+  useEffect(()=>{(async()=>{
+    try{const r=await APPSTORE.get(SITEKEY);setSites(r&&r.value?JSON.parse(r.value):[]);}
+    catch(err){try{await APPSTORE.set(SITEKEY,"[]");}catch(e2){setPersist(false);}}
+    setLoaded(true);})();},[]);
+  const save=async list=>{setSites(list);if(!persist)return;try{await APPSTORE.set(SITEKEY,JSON.stringify(list));}catch(e){setPersist(false);}};
+  const site=sites.find(s=>s.id===siteId);
+  const unit=site&&site.units.find(u=>u.id===unitId);
+  const addSite=()=>{const n=newName.trim();if(!n)return;const s={id:Date.now(),name:n,units:[]};save([s,...sites]);setNewName("");setSiteId(s.id);};
+  const addUnit=()=>{const u={id:Date.now(),label:"RTU-"+(site.units.length+1)};save(sites.map(s=>s.id===siteId?{...s,units:[...s.units,u]}:s));setUnitId(u.id);};
+  const setU=(k,v)=>save(sites.map(s=>s.id===siteId?{...s,units:s.units.map(u=>u.id===unitId?{...u,[k]:v}:u)}:s));
+  const delUnit=id=>{save(sites.map(s=>s.id===siteId?{...s,units:s.units.filter(u=>u.id!==id)}:s));setUnitId(null);};
+  const delSite=id=>{save(sites.filter(s=>s.id!==id));setSiteId(null);};
+  const stockText=s=>["SITE: "+s.name,...s.units.map(u=>(u.label||"?")+" — "+[u.brand,u.model,u.tons?u.tons+"T":null].filter(Boolean).join(" ")+(u.belt?" | Belt: "+u.belt:"")+(u.filters?" | Filters: "+u.filters:""))].join("\n");
+  const doCopy=async txt=>{try{await navigator.clipboard.writeText(txt);setCopiedS(true);setShowText(null);setTimeout(()=>setCopiedS(false),1400);}catch(e){setShowText(txt);}};
+  if(unit)return(<div>
+    <div className="rd-chips"><button className="rd-chip" onClick={()=>setUnitId(null)}>{"\u2039"} {site.name}</button></div>
+    <div className="rd-card">
+      <div className="rd-row">
+        {UNIT_FIELDS.map(([k,l])=>(<Field key={k} l={l}><input className="rd-in" value={unit[k]||""} onChange={e=>setU(k,e.target.value)}/></Field>))}
+      </div>
+      <span className="rd-lbl">Quirks / known issues</span>
+      <input className="rd-in" value={unit.quirks||""} onChange={e=>setU("quirks",e.target.value)} placeholder="C2 schrader weeps, econ hub was loose 3/26"/>
+      {unit.plateText&&<div style={{marginTop:10}}><span className="rd-lbl">Plate read</span><div className="rd-pre">{unit.plateText}</div></div>}
+      <button className="rd-ghost" onClick={()=>delUnit(unit.id)}><Trash2 size={13} style={{verticalAlign:"-2px",marginRight:6}}/>Delete this unit</button>
+    </div>
+  </div>);
+  if(site)return(<div>
+    <div className="rd-chips"><button className="rd-chip" onClick={()=>setSiteId(null)}>{"\u2039"} All sites</button></div>
+    <div className="rd-card" style={{paddingTop:10}}>
+      <div className="rd-fixhead" style={{marginBottom:4}}><span className="rd-fixstamp">SITE</span><span className="rd-fixtitle">{site.name}</span></div>
+      {site.units.length>0&&<button className="rd-ghost" style={{borderStyle:"solid",color:"var(--ink)"}} onClick={()=>doCopy(stockText(site))}><Copy size={13} style={{verticalAlign:"-2px",marginRight:6}}/>{copiedS?"Copied":"Copy truck stock list (belts + filters)"}</button>}
+      {showText!=null&&<div><div className="rd-note">Clipboard blocked — long-press to select:</div><div className="rd-pre">{showText}</div></div>}
+    </div>
+    {site.units.map(u=>(<button key={u.id} className="rd-logent" style={{width:"100%",textAlign:"left",color:"var(--ink)",cursor:"pointer"}} onClick={()=>setUnitId(u.id)}>
+      <h4><span>{u.label||"(unnamed)"} <span className="rd-amb" style={{fontFamily:"var(--mono)",fontSize:12}}>{[u.brand,u.model].filter(Boolean).join(" ")}</span></span></h4>
+      <div className="rd-note" style={{marginTop:4}}>{[u.tons?u.tons+"T":null,u.belt?"Belt "+u.belt:null,u.filters?"Filters "+u.filters:null,u.quirks?"\u26A0 "+u.quirks:null].filter(Boolean).join(" \u00B7 ")||"tap to fill in"}</div>
+    </button>))}
+    <button className="rd-jump" onClick={addUnit}><Plus size={15} style={{verticalAlign:"-2px",marginRight:6}}/>Add unit</button>
+    <button className="rd-ghost" onClick={()=>delSite(site.id)}><Trash2 size={13} style={{verticalAlign:"-2px",marginRight:6}}/>Delete site</button>
+  </div>);
+  return(<div>
+    {loaded&&!persist&&<div className="rd-banner" style={{borderLeftColor:"var(--trip)"}}>Storage unavailable here — fleet data lives for this session only.</div>}
+    <div className="rd-card">
+      <div className="rd-row">
+        <Field l="New site"><input className="rd-in" value={newName} onChange={e=>setNewName(e.target.value)} placeholder="Greensburg store"/></Field>
+        <div style={{alignSelf:"flex-end"}}><button className="rd-jump" style={{marginTop:0,minWidth:110}} onClick={addSite}><Plus size={14} style={{verticalAlign:"-2px",marginRight:4}}/>Add</button></div>
+      </div>
+    </div>
+    {sites.map(s=>(<button key={s.id} className="rd-logent" style={{width:"100%",textAlign:"left",color:"var(--ink)",cursor:"pointer"}} onClick={()=>setSiteId(s.id)}>
+      <h4><span>{s.name}</span><time>{s.units.length} unit{s.units.length===1?"":"s"}</time></h4>
+    </button>))}
+    {loaded&&!sites.length&&<div className="rd-note" style={{textAlign:"center",padding:"18px 0"}}>No sites yet. Add one, then file units under it — plate reads, belts, filters, and the quirks you only remember on the ladder.</div>}
+  </div>);
+}
+
+/* ---------- ASK CLAUDE (fix cards) ---------- */
+function AskPanel({tree,node,hist}){
+  const[open,setOpen]=useState(false);
+  const[text,setText]=useState("");
+  const[busy,setBusy]=useState(false);
+  const[ans,setAns]=useState(null);
+  const[err,setErr]=useState(null);
+  const run=async()=>{
+    if(!text.trim())return;
+    setBusy(true);setErr(null);setAns(null);
+    try{
+      const path=hist.map(h=>{const n=N[h.node];return n&&n.q?("Q: "+n.q+" -> answered: "+(h.choice||"?")):null;}).filter(Boolean).join("\n");
+      const nd=N[node];
+      const t=await claudeText([{type:"text",text:"You are helping a commercial HVAC tech mid-diagnosis on a packaged rooftop unit.\nDiagnostic tree: "+TREE_LABEL[tree]+"\nPath taken:\n"+(path||"(tree start)")+"\nLanded on fix card: "+nd.f+"\nCard steps: "+nd.s.join(" | ")+"\nTech reports: "+text.trim()+"\nReply with the most likely cause and the next 2-3 specific checks — meter points and expected values where relevant. If the reported symptoms point to a different branch, say which. Under 150 words, plain text, no markdown."}]);
+      setAns(t||"(no answer — try again)");
+    }catch(e){setErr((e&&e.message)||"Ask failed — check connection and resend.");}
+    setBusy(false);
+  };
+  return(<div style={{marginTop:10}}>
+    {!open&&<button className="rd-ghost" onClick={()=>setOpen(true)}>Stuck? Ask Claude about this one</button>}
+    {open&&<div>
+      <textarea className="rd-in" rows={3} style={{fontFamily:"system-ui",fontWeight:400,fontSize:15,resize:"vertical"}} placeholder="What you are seeing: readings, sounds, what you already tried" value={text} onChange={e=>setText(e.target.value)}/>
+      <button className="rd-jump" disabled={busy} style={{opacity:busy?0.6:1}} onClick={run}>{busy?"Thinking\u2026":"Send with tree context"}</button>
+      {err&&<Warn>{err}</Warn>}
+      {ans&&<div className="rd-pre" style={{fontFamily:"system-ui",fontWeight:400,fontSize:14,lineHeight:1.5}}>{ans}</div>}
+    </div>}
+  </div>);
+}
+
+/* ---------- PHOTO CODE DECODE ---------- */
+function PhotoDecode(){
+  const[open,setOpen]=useState(false);
+  const[imgs,setImgs]=useState([]);
+  const[note,setNote]=useState("");
+  const[busy,setBusy]=useState(false);
+  const[ans,setAns]=useState(null);
+  const[err,setErr]=useState(null);
+  const add=async e=>{const fl=[...e.target.files];const out=[];for(const f of fl){out.push(await fileToImagePart(f));}setImgs(p=>[...p,...out]);e.target.value="";};
+  const run=async()=>{
+    if(!imgs.length&&!note.trim()){setErr("Add a board photo or type what it is doing.");return;}
+    setBusy(true);setErr(null);setAns(null);
+    try{
+      const content=imgs.map(im=>({type:"image",source:{type:"base64",media_type:im.type,data:im.b64}}));
+      content.push({type:"text",text:"RTU control board / display / door label photo(s)."+(note.trim()?" Tech notes: "+note.trim()+".":"")+" Identify the board or module if possible; read any text alarm, 7-segment code, or labeled LED visible. Decode using a door-label legend if one is in frame, otherwise common patterns with a verify-on-door caveat. If a flash count was typed in the notes, decode that. End with the first 2-3 checks. Under 130 words, plain text, no markdown."});
+      const t=await claudeText(content);
+      setAns(t||"(no answer — try again)");
+    }catch(e){setErr((e&&e.message)||"Decode failed — check connection and try again.");}
+    setBusy(false);
+  };
+  return(<div>
+    {!open&&<button className="rd-ghost" style={{borderStyle:"solid",color:"var(--ink)",marginTop:0,marginBottom:8}} onClick={()=>setOpen(true)}>Decode from a photo instead</button>}
+    {open&&<div className="rd-card" style={{marginTop:0}}>
+      <label className="rd-jump" style={{display:"flex",alignItems:"center",justifyContent:"center",marginTop:0,cursor:"pointer"}}>
+        <Plus size={15} style={{marginRight:6}}/>{imgs.length?imgs.length+" photo(s) — add more":"Add board / display / door label photo"}
+        <input type="file" accept="image/*" multiple hidden onChange={add}/>
+      </label>
+      <span className="rd-lbl">Flashes / what you see (optional)</span>
+      <input className="rd-in" value={note} onChange={e=>setNote(e.target.value)} placeholder="4 flashes pause, red LED on RTRM"/>
+      <button className="rd-jump" disabled={busy} style={{opacity:busy?0.6:1}} onClick={run}>{busy?"Decoding\u2026":"Decode"}</button>
+      <div className="rd-note">Flashing LEDs: type the count — a still photo can not catch rhythm. Getting the door label sticker in frame helps a lot.</div>
+      {err&&<Warn>{err}</Warn>}
+      {ans&&<div className="rd-pre" style={{fontFamily:"system-ui",fontWeight:400,fontSize:14,lineHeight:1.5}}>{ans}</div>}
+    </div>}
+  </div>);
+}
+
+/* ---------- WIRING DIAGRAM READER ---------- */
+function WiringView(){
+  const[imgs,setImgs]=useState([]);
+  const[q,setQ]=useState("");
+  const[busy,setBusy]=useState(false);
+  const[err,setErr]=useState(null);
+  const[qa,setQa]=useState([]);
+  const add=async e=>{const fl=[...e.target.files];const out=[];for(const f of fl){out.push({name:f.name,...(await fileToImagePart(f))});}setImgs(p=>[...p,...out]);e.target.value="";};
+  const run=async()=>{
+    if(!imgs.length){setErr("Add a photo of the diagram first.");return;}
+    setBusy(true);setErr(null);
+    try{
+      const content=imgs.map(im=>({type:"image",source:{type:"base64",media_type:im.type,data:im.b64}}));
+      const ask=q.trim();
+      content.push({type:"text",text:"Photo(s) of an RTU wiring diagram (door panel schematic / ladder)."+(ask?" Tech question: "+ask:" No specific question — give a field-useful breakdown: control voltage source, the safety string in series order, what pulls in each contactor, and any relays or boards sitting between thermostat inputs and the loads.")+" Rules: use ONLY what is legible in this diagram — its own terminal designations, wire colors, and device labels. If a needed area is blurry or cut off, say exactly which section to re-shoot closer. Never guess a wire color or terminal. Plain text, no markdown, under 180 words."});
+      const t=await claudeText(content);
+      setQa(h=>[{q:ask||"(full breakdown)",a:t||"(no answer — try again)"},...h]);
+      setQ("");
+    }catch(e){setErr((e&&e.message)||"Read failed — try again.");}
+    setBusy(false);
+  };
+  return(<div>
+    <div className="rd-banner">Snap the door diagram, then ask circuit questions against it. One wide shot plus a closeup of the area you care about reads best. Answers come from YOUR diagram, not generic wiring.</div>
+    <div className="rd-card">
+      <label className="rd-jump" style={{display:"flex",alignItems:"center",justifyContent:"center",marginTop:0,cursor:"pointer"}}>
+        <Plus size={15} style={{marginRight:6}}/>{imgs.length?imgs.length+" photo(s) — add a closeup":"Add diagram photo(s)"}
+        <input type="file" accept="image/*" multiple hidden onChange={add}/>
+      </label>
+      {imgs.length>0&&<div className="rd-note">{imgs.map(i=>i.name).join(", ")} <button className="rd-chip" style={{marginLeft:6}} onClick={()=>{setImgs([]);setQa([]);}}>clear</button></div>}
+      <span className="rd-lbl">Question (blank = full breakdown)</span>
+      <input className="rd-in" value={q} onChange={e=>setQ(e.target.value)} placeholder="What is in series with the C contactor coil?"/>
+      <button className="rd-jump" disabled={busy} style={{opacity:busy?0.6:1}} onClick={run}>{busy?"Reading\u2026":"Read diagram"}</button>
+      {err&&<Warn>{err}</Warn>}
+    </div>
+    {qa.map((h,i)=>(<div className="rd-card" key={i}>
+      <span className="rd-lbl">{h.q}</span>
+      <div className="rd-pre" style={{fontFamily:"system-ui",fontWeight:400,fontSize:14,lineHeight:1.5,marginTop:4}}>{h.a}</div>
+    </div>))}
+    {qa.length>0&&<div className="rd-note" style={{textAlign:"center"}}>Photos stay loaded — ask the next circuit without re-shooting.</div>}
+  </div>);
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(RTUDeck));
+</script>
+<script>
+if("serviceWorker" in navigator){window.addEventListener("load",()=>{navigator.serviceWorker.register("sw.js").catch(()=>{});});}
+</script>
+</body>
+</html>
